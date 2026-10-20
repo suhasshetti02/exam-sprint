@@ -1,0 +1,10 @@
+[
+  { "id": "normalization-basics", "title": "Why normalize", "documentId": "dbms-normalization" },
+  { "id": "functional-dependencies", "title": "Functional dependencies and closure", "documentId": "dbms-normalization" },
+  { "id": "1nf", "title": "First normal form", "documentId": "dbms-normalization" },
+  { "id": "2nf", "title": "Second normal form", "documentId": "dbms-normalization" },
+  { "id": "3nf", "title": "Third normal form", "documentId": "dbms-normalization" },
+  { "id": "bcnf", "title": "Boyce-Codd normal form", "documentId": "dbms-normalization" },
+  { "id": "acid", "title": "ACID properties", "documentId": "dbms-transactions" },
+  { "id": "isolation-levels", "title": "Isolation levels", "documentId": "dbms-transactions" }
+]

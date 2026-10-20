@@ -1,0 +1,13 @@
+{
+  "name": "@exam-sprint/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared domain types, Zod schemas and interfaces for Exam Sprint. Framework-free.",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": { "zod": "^3.25.76" }
+}

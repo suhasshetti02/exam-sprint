@@ -1,0 +1,32 @@
+{
+  "name": "exam-sprint",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Exam Sprint: an adaptive, evidence-gated conversational exam tutor (Amazon Developer Hackathon 2026, Alexa+ track).",
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev:web": "npm run dev --workspace @exam-sprint/web",
+    "dev:mcp": "npm run dev --workspace @exam-sprint/mcp-server",
+    "start:mcp": "npm run start --workspace @exam-sprint/mcp-server",
+    "build": "npm run build --workspace @exam-sprint/web",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tests/tsconfig.json",
+    "lint": "eslint .",
+    "test": "npm run test --workspaces --if-present && vitest run --config tests/vitest.config.ts",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "db:init": "node scripts/db-init.mjs",
+    "db:demo-seed": "node scripts/db-demo-seed.mjs",
+    "inspect:mcp": "npx @modelcontextprotocol/inspector",
+    "test:smoke:provider": "node scripts/smoke-provider.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "16.4.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "5.0.5"
+  }
+}

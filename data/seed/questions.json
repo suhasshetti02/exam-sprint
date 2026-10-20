@@ -1,0 +1,440 @@
+[
+  {
+    "id": "q-norm-basics-1",
+    "conceptId": "normalization-basics",
+    "kind": "short_answer",
+    "prompt": "What primary problems or anomalies arise when the same fact is stored in several rows of a relational schema?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Update, insertion and deletion anomalies",
+      "acceptableVariants": [
+        "update insertion and deletion anomalies",
+        "update insertion or deletion anomalies",
+        "update delete and insert anomalies",
+        "anomalies"
+      ],
+      "partialVariants": [
+        "redundancy",
+        "inconsistency",
+        "storage waste"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["slow queries", "lock contention", "performance degradation"],
+          "label": "confuses-anomalies-with-performance",
+          "explanation": "While redundant data may affect performance, normalization primarily eliminates update, insertion and deletion anomalies."
+        }
+      ],
+      "explanation": "Normalization organizes a schema so each fact is stored once, preventing update, insertion and deletion anomalies."
+    },
+    "evidenceChunkId": "dbms-normalization#why-normalize",
+    "evidenceQuote": "Storing a fact in several rows invites update, insertion and deletion anomalies."
+  },
+  {
+    "id": "q-norm-basics-2",
+    "conceptId": "normalization-basics",
+    "kind": "multiple_choice",
+    "prompt": "Why does normalization organize a relational schema so that each fact is stored once?",
+    "choices": [
+      "A. To eliminate all primary and foreign keys from the database",
+      "B. Because storing a fact in several rows invites update, insertion and deletion anomalies",
+      "C. To prevent secondary indexes from consuming disk space",
+      "D. To guarantee that transactions always execute in serializable isolation"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "B",
+      "misconceptions": [
+        {
+          "choiceLetter": "A",
+          "label": "misunderstands-relational-keys",
+          "explanation": "Normalization relies on keys to define dependencies and relationships; it does not eliminate them."
+        },
+        {
+          "choiceLetter": "D",
+          "label": "confuses-normalization-with-concurrency",
+          "explanation": "Serializable isolation is a transaction concurrency property, not the purpose of schema normalization."
+        }
+      ],
+      "explanation": "Storing a fact in several rows invites update, insertion and deletion anomalies."
+    },
+    "evidenceChunkId": "dbms-normalization#why-normalize",
+    "evidenceQuote": "Normalization organizes a relational schema so that each fact is stored once. Storing a fact in several rows invites update, insertion and deletion anomalies."
+  },
+  {
+    "id": "q-fd-1",
+    "conceptId": "functional-dependencies",
+    "kind": "short_answer",
+    "prompt": "Under what condition does a functional dependency X -> Y hold in a relational schema?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Every pair of rows that agree on X also agree on Y",
+      "acceptableVariants": [
+        "every pair of rows that agree on x also agree on y",
+        "pairs of rows that agree on x also agree on y",
+        "rows that agree on x agree on y",
+        "two rows agreeing on x must agree on y"
+      ],
+      "partialVariants": [
+        "x determines y",
+        "x uniquely identifies y"
+      ],
+      "explanation": "A functional dependency X -> Y holds when every pair of rows that agree on X also agree on Y."
+    },
+    "evidenceChunkId": "dbms-normalization#functional-dependencies",
+    "evidenceQuote": "A functional dependency X -> Y holds when every pair of rows that agree on X also agree on Y."
+  },
+  {
+    "id": "q-fd-2",
+    "conceptId": "functional-dependencies",
+    "kind": "multiple_choice",
+    "prompt": "What is the closure of an attribute set X in relational database theory?",
+    "choices": [
+      "A. Every attribute that X determines, directly or through other dependencies",
+      "B. Only the attributes that form a composite foreign key referencing X",
+      "C. The total count of tuples in the relation that share attribute X",
+      "D. The set of all attributes that have no functional dependency on X"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "explanation": "The closure of an attribute set X is every attribute that X determines, directly or through other dependencies."
+    },
+    "evidenceChunkId": "dbms-normalization#functional-dependencies",
+    "evidenceQuote": "The closure of an attribute set X is every attribute that X determines, directly or through other dependencies."
+  },
+  {
+    "id": "q-1nf-1",
+    "conceptId": "1nf",
+    "kind": "short_answer",
+    "prompt": "What are the two structural requirements for a table to be in first normal form (1NF)?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Every column holds a single atomic value and there are no repeating groups of columns",
+      "acceptableVariants": [
+        "every column holds a single atomic value and there are no repeating groups of columns",
+        "atomic values and no repeating groups",
+        "single atomic value and no repeating groups",
+        "columns hold atomic values and no repeating groups"
+      ],
+      "partialVariants": [
+        "atomic values",
+        "no repeating groups",
+        "atomic"
+      ],
+      "explanation": "A table is in first normal form when every column holds a single atomic value and there are no repeating groups of columns."
+    },
+    "evidenceChunkId": "dbms-normalization#first-normal-form",
+    "evidenceQuote": "A table is in first normal form when every column holds a single atomic value and there are no repeating groups of columns."
+  },
+  {
+    "id": "q-1nf-2",
+    "conceptId": "1nf",
+    "kind": "multiple_choice",
+    "prompt": "Which table design violates first normal form (1NF)?",
+    "choices": [
+      "A. A table where a column contains comma-separated lists of phone numbers (repeating groups)",
+      "B. A table where a non-key column depends on another non-key column",
+      "C. A table where a non-key attribute depends on part of a composite primary key",
+      "D. A table containing a foreign key referencing an external table"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "misconceptions": [
+        {
+          "choiceLetter": "B",
+          "label": "confuses-1nf-with-3nf",
+          "explanation": "A non-key column depending on another non-key column is a transitive dependency (violating 3NF, not 1NF)."
+        },
+        {
+          "choiceLetter": "C",
+          "label": "confuses-1nf-with-2nf",
+          "explanation": "Depending on part of a composite key is a partial dependency (violating 2NF, not 1NF)."
+        }
+      ],
+      "explanation": "1NF requires atomic values and no repeating groups of columns."
+    },
+    "evidenceChunkId": "dbms-normalization#first-normal-form",
+    "evidenceQuote": "A table is in first normal form when every column holds a single atomic value and there are no repeating groups of columns."
+  },
+  {
+    "id": "q-2nf-1",
+    "conceptId": "2nf",
+    "kind": "short_answer",
+    "prompt": "What specific type of dependency does second normal form (2NF) remove?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Partial dependencies",
+      "acceptableVariants": [
+        "partial dependencies",
+        "partial dependency",
+        "partial functional dependencies"
+      ],
+      "partialVariants": [
+        "dependencies on composite key"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["transitive", "transitive dependency", "transitive dependencies"],
+          "label": "confuses-2nf-with-3nf",
+          "explanation": "Transitive dependencies are removed by 3NF. 2NF removes partial dependencies."
+        }
+      ],
+      "explanation": "Partial dependencies are the problem second normal form removes."
+    },
+    "evidenceChunkId": "dbms-normalization#second-normal-form",
+    "evidenceQuote": "Partial dependencies are the problem this form removes."
+  },
+  {
+    "id": "q-2nf-2",
+    "conceptId": "2nf",
+    "kind": "multiple_choice",
+    "prompt": "When is a table considered to be in second normal form (2NF)?",
+    "choices": [
+      "A. When it is in 1NF and no non-key attribute depends on only part of a composite candidate key",
+      "B. When every functional dependency X -> Y has a superkey on the left side",
+      "C. When all non-key attributes are strictly independent of one another",
+      "D. When every table row is replicated across multiple database partitions"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "misconceptions": [
+        {
+          "choiceLetter": "B",
+          "label": "confuses-2nf-with-bcnf",
+          "explanation": "Requiring every determinant to be a superkey is the definition of BCNF, not 2NF."
+        },
+        {
+          "choiceLetter": "C",
+          "label": "confuses-2nf-with-3nf",
+          "explanation": "Removing dependencies between non-key attributes is the definition of 3NF, not 2NF."
+        }
+      ],
+      "explanation": "A table is in second normal form when it is in first normal form and no non-key attribute depends on only part of a composite candidate key."
+    },
+    "evidenceChunkId": "dbms-normalization#second-normal-form",
+    "evidenceQuote": "A table is in second normal form when it is in first normal form and no non-key attribute depends on only part of a composite candidate key. Partial dependencies are the problem this form removes."
+  },
+  {
+    "id": "q-3nf-1",
+    "conceptId": "3nf",
+    "kind": "short_answer",
+    "prompt": "What is the term for a dependency where a non-key attribute depends on another non-key attribute?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Transitive dependency",
+      "acceptableVariants": [
+        "transitive dependency",
+        "transitive dependencies",
+        "transitive"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["partial", "partial dependency", "partial dependencies"],
+          "label": "confuses-3nf-with-2nf",
+          "explanation": "Dependencies on part of a candidate key are partial dependencies (2NF). A non-key depending on another non-key is a transitive dependency (3NF)."
+        }
+      ],
+      "explanation": "When a non-key attribute depends on another non-key attribute, this is called a transitive dependency."
+    },
+    "evidenceChunkId": "dbms-normalization#third-normal-form",
+    "evidenceQuote": "A table is in third normal form when it is in second normal form and no non-key attribute depends on another non-key attribute. This is called a transitive dependency."
+  },
+  {
+    "id": "q-3nf-2",
+    "conceptId": "3nf",
+    "kind": "multiple_choice",
+    "prompt": "When is a table in third normal form (3NF)?",
+    "choices": [
+      "A. When it is in second normal form and no non-key attribute depends on another non-key attribute",
+      "B. When every column holds a single atomic value and there are no repeating groups",
+      "C. When every non-trivial functional dependency has a superkey on the left",
+      "D. When no table contains nullable columns"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "misconceptions": [
+        {
+          "choiceLetter": "B",
+          "label": "confuses-3nf-with-1nf",
+          "explanation": "Single atomic values and no repeating groups is the definition of 1NF."
+        },
+        {
+          "choiceLetter": "C",
+          "label": "confuses-3nf-with-bcnf",
+          "explanation": "Requiring every determinant to be a superkey defines BCNF, which is stricter than 3NF."
+        }
+      ],
+      "explanation": "A table is in third normal form when it is in second normal form and no non-key attribute depends on another non-key attribute."
+    },
+    "evidenceChunkId": "dbms-normalization#third-normal-form",
+    "evidenceQuote": "A table is in third normal form when it is in second normal form and no non-key attribute depends on another non-key attribute. This is called a transitive dependency."
+  },
+  {
+    "id": "q-bcnf-1",
+    "conceptId": "bcnf",
+    "kind": "short_answer",
+    "prompt": "Why is Boyce-Codd normal form (BCNF) stricter than third normal form (3NF)?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Third normal form tolerates a dependency whose right side is part of a candidate key",
+      "acceptableVariants": [
+        "third normal form tolerates a dependency whose right side is part of a candidate key",
+        "3nf tolerates a dependency whose right side is part of a candidate key",
+        "3nf allows prime attribute on right side",
+        "tolerates a dependency whose right side is part of a candidate key"
+      ],
+      "partialVariants": [
+        "bcnf requires x to be a superkey",
+        "superkey"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["bcnf eliminates transitive dependencies", "bcnf removes repeating groups"],
+          "label": "confuses-3nf-with-bcnf",
+          "explanation": "3NF already eliminates transitive dependencies. BCNF is stricter because 3NF tolerates dependencies whose right side is part of a candidate key."
+        }
+      ],
+      "explanation": "BCNF is stricter than third normal form because third normal form tolerates a dependency whose right side is part of a candidate key."
+    },
+    "evidenceChunkId": "dbms-normalization#boyce-codd-normal-form",
+    "evidenceQuote": "BCNF is stricter than third normal form because third normal form tolerates a dependency whose right side is part of a candidate key."
+  },
+  {
+    "id": "q-bcnf-2",
+    "conceptId": "bcnf",
+    "kind": "multiple_choice",
+    "prompt": "Under what condition is a table in Boyce-Codd normal form (BCNF)?",
+    "choices": [
+      "A. When, for every non-trivial functional dependency X -> Y, X is a superkey",
+      "B. When every non-key column depends on only part of a candidate key",
+      "C. When all transactions commit with serializable isolation",
+      "D. When no composite keys exist in the relation"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "explanation": "A table is in Boyce-Codd normal form (BCNF) when, for every non-trivial functional dependency X -> Y, X is a superkey."
+    },
+    "evidenceChunkId": "dbms-normalization#boyce-codd-normal-form",
+    "evidenceQuote": "A table is in Boyce-Codd normal form (BCNF) when, for every non-trivial functional dependency X -> Y, X is a superkey."
+  },
+  {
+    "id": "q-acid-1",
+    "conceptId": "acid",
+    "kind": "short_answer",
+    "prompt": "In ACID transactions, what does durability mean once a transaction commits?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Its changes survive a crash",
+      "acceptableVariants": [
+        "its changes survive a crash",
+        "changes survive a crash",
+        "survive a crash",
+        "survives a crash"
+      ],
+      "partialVariants": [
+        "changes are permanent",
+        "saved to disk"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["all changes are applied or none", "all or none", "all or nothing"],
+          "label": "confuses-durability-with-atomicity",
+          "explanation": "All changes applied or none is the definition of Atomicity. Durability means that once committed, changes survive a crash."
+        }
+      ],
+      "explanation": "Durability means that once a transaction commits, its changes survive a crash."
+    },
+    "evidenceChunkId": "dbms-transactions#atomicity-and-durability",
+    "evidenceQuote": "Durability means that once a transaction commits, its changes survive a crash."
+  },
+  {
+    "id": "q-acid-2",
+    "conceptId": "acid",
+    "kind": "multiple_choice",
+    "prompt": "What does the Atomicity property guarantee in ACID database transactions?",
+    "choices": [
+      "A. All of a transaction's changes are applied or none are",
+      "B. Once committed, data survives a system crash",
+      "C. Transactions execute sequentially without interleaving",
+      "D. Non-repeatable reads are completely eliminated"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "misconceptions": [
+        {
+          "choiceLetter": "B",
+          "label": "confuses-atomicity-with-durability",
+          "explanation": "Surviving a crash after commit is Durability, not Atomicity."
+        },
+        {
+          "choiceLetter": "C",
+          "label": "confuses-atomicity-with-serializable",
+          "explanation": "Executing as if sequential is the Serializable isolation guarantee."
+        }
+      ],
+      "explanation": "Atomicity means all of a transaction's changes are applied or none are."
+    },
+    "evidenceChunkId": "dbms-transactions#atomicity-and-durability",
+    "evidenceQuote": "Atomicity means all of a transaction's changes are applied or none are."
+  },
+  {
+    "id": "q-iso-1",
+    "conceptId": "isolation-levels",
+    "kind": "short_answer",
+    "prompt": "Which SQL isolation level behaves as if transactions ran one after another?",
+    "expected": {
+      "kind": "short_answer",
+      "correctAnswer": "Serializable",
+      "acceptableVariants": [
+        "serializable",
+        "serializable isolation",
+        "serializable level"
+      ],
+      "partialVariants": [
+        "serial"
+      ],
+      "misconceptions": [
+        {
+          "pattern": ["repeatable read", "read committed", "read uncommitted"],
+          "label": "confuses-serializable-with-lower-levels",
+          "explanation": "Only Serializable behaves as if transactions ran one after another."
+        }
+      ],
+      "explanation": "Serializable behaves as if transactions ran one after another."
+    },
+    "evidenceChunkId": "dbms-transactions#isolation-levels",
+    "evidenceQuote": "Serializable behaves as if transactions ran one after another."
+  },
+  {
+    "id": "q-iso-2",
+    "conceptId": "isolation-levels",
+    "kind": "multiple_choice",
+    "prompt": "Which concurrency anomaly is permitted by Read Uncommitted but prevented by Read Committed?",
+    "choices": [
+      "A. Dirty reads",
+      "B. Non-repeatable reads",
+      "C. Phantom reads",
+      "D. Crash recovery failures"
+    ],
+    "expected": {
+      "kind": "multiple_choice",
+      "correctAnswer": "A",
+      "misconceptions": [
+        {
+          "choiceLetter": "B",
+          "label": "confuses-dirty-reads-with-non-repeatable",
+          "explanation": "Read Committed still allows non-repeatable reads; preventing them requires Repeatable Read."
+        }
+      ],
+      "explanation": "Read uncommitted allows dirty reads. Read committed prevents dirty reads."
+    },
+    "evidenceChunkId": "dbms-transactions#isolation-levels",
+    "evidenceQuote": "Read uncommitted allows dirty reads. Read committed prevents dirty reads."
+  }
+]

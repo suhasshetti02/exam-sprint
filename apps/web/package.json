@@ -1,0 +1,35 @@
+{
+  "name": "@exam-sprint/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Exam Sprint web app (Alexa+-style conversational UI).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@exam-sprint/core": "*",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@types/pdf-parse": "^1.1.5",
+    "lucide-react": "^1.59.0",
+    "next": "16.4.2",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^27.0.0",
+    "tailwindcss": "^4.1.0"
+  }
+}

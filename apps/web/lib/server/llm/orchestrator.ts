@@ -17,6 +17,7 @@ export interface OrchestratorInput {
   focus?: "new" | "weak" | "review";
   documentId?: string;
   goal?: "teach" | "quiz" | "weak" | "full_document";
+  sectionOrdinal?: number;
   questionId?: string;
   answer?: string;
   recoveryForMisconceptionLabel?: string;
@@ -42,6 +43,7 @@ export async function runTutoringOrchestration(
       focus: input.focus,
       documentId: input.documentId,
       goal: input.goal,
+      sectionOrdinal: input.sectionOrdinal,
     });
     return {
       ...res,
@@ -231,6 +233,7 @@ export async function runTutoringOrchestration(
       focus: input.focus,
       documentId: input.documentId,
       goal: input.goal,
+      sectionOrdinal: input.sectionOrdinal,
     });
     return {
       ...fallbackRes,

@@ -125,6 +125,7 @@ export async function startSession(
     focus?: "new" | "weak" | "review";
     documentId?: string;
     goal?: "teach" | "quiz" | "weak" | "full_document";
+    sectionOrdinal?: number;
   } = {},
   signal?: AbortSignal,
 ): Promise<SessionResponse> {

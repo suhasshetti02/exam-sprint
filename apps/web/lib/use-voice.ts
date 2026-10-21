@@ -158,6 +158,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       window.speechSynthesis.cancel();
       activeUtterancesRef.current.clear();
       isSpeakingRef.current = false;
+      isProcessingRef.current = false;
       setVoiceState((prev) =>
         prev === "speaking" ? (wakeWordEnabledRef.current ? "wake_listening" : "disabled") : prev,
       );
@@ -300,10 +301,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       for (let i = speechEvent.resultIndex; i < speechEvent.results.length; i++) {
         const res = speechEvent.results[i];
-        if (res && res[0]) {
-          fullTranscript += res[0].transcript;
-          if (res.isFinal) isFinal = true;
+        if (res) {
+          if (res[0]) {
+            fullTranscript += res[0].transcript;
+          }
+          if (res.isFinal || (res as unknown as { isFinal?: boolean }).isFinal) {
+            isFinal = true;
+          }
         }
+      }
+      if ((speechEvent.results as unknown as { isFinal?: boolean })?.isFinal) {
+        isFinal = true;
       }
 
       const trimmed = fullTranscript.trim();
@@ -372,8 +380,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
           return;
         }
 
-        // Process command on final speech result or recognized unambiguous command
-        if (isFinal || command.type === "select_option" || command.type === "repeat_question" || command.type === "give_hint") {
+        // Strictly reject interim recognition results from submitting options or executing commands
+        if (!isFinal) {
+          return;
+        }
+
+        {
           const qId = optionsRef.current.context?.activeQuestion?.questionId ?? "no-q";
           const submissionKey = `${qId}_${command.type}_${targetText.toLowerCase()}`;
 
@@ -527,10 +539,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       for (let i = speechEvent.resultIndex; i < speechEvent.results.length; i++) {
         const res = speechEvent.results[i];
-        if (res && res[0]) {
-          transcript += res[0].transcript;
-          if (res.isFinal) isFinal = true;
+        if (res) {
+          if (res[0]) {
+            transcript += res[0].transcript;
+          }
+          if (res.isFinal || (res as unknown as { isFinal?: boolean }).isFinal) {
+            isFinal = true;
+          }
         }
+      }
+      if ((speechEvent.results as unknown as { isFinal?: boolean })?.isFinal) {
+        isFinal = true;
       }
 
       if (transcript) {

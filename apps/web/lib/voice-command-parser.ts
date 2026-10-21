@@ -238,6 +238,7 @@ export function classifyIntent(
   // 2. Quiz Progression & Navigation
   if (
     /^(?:next\s+question|go\s+to\s+next\s+question|next\s+one|next|advance|continue|move\s+on)$/i.test(normalized) ||
+    /^(?:ask\s+me\s+another\s+question|another\s+question|give\s+me\s+another\s+question)$/i.test(normalized) ||
     /^next\s+question\s+please$/i.test(normalized)
   ) {
     return {
@@ -303,7 +304,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:why\s+was\s+my\s+answer\s+(?:wrong|incorrect)|why\s+did\s+i\s+get\s+that\s+wrong|why\s+is\s+that\s+(?:wrong|incorrect))$/i.test(normalized)
+    /^(?:why\s+was\s+my\s+answer\s+(?:wrong|incorrect)|why\s+did\s+i\s+get\s+that\s+wrong|why\s+is\s+that\s+(?:wrong|incorrect)|explain\s+(?:my\s+)?(?:mistake|error)|what\s+did\s+i\s+do\s+wrong|why\s+am\s+i\s+wrong)$/i.test(normalized)
   ) {
     return {
       intent: "EXPLAIN_ANSWER",
@@ -327,6 +328,18 @@ export function classifyIntent(
   }
 
   if (
+    /^(?:why\s+is\s+(?:this|it|that)\s+(?:the\s+)?(?:correct|right)(?:\s+answer)?|why\s+is\s+this\s+correct|why\s+is\s+it\s+correct)$/i.test(normalized)
+  ) {
+    return {
+      intent: "EXPLAIN_ANSWER",
+      confidence: 0.95,
+      args: { target: "why_correct" },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  if (
     /^(?:why(?:\s+is\s+that)?|explain\s+(?:that|this)?\s+again|explain\s+why|repeat\s+(?:the\s+)?explanation|why\s+though)$/i.test(normalized)
   ) {
     return {
@@ -339,7 +352,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:explain(?:\s+this)?(?:\s+topic)?\s+more\s+simply|in\s+simple\s+terms|simpler\s+please|simplify(?:\s+this)?|eli5|explain\s+like\s+i'm\s+five)$/i.test(
+    /^(?:explain(?:\s+this)?(?:\s+topic)?\s+more\s+simply|explain\s+more\s+simply|in\s+simple\s+terms|simpler\s+please|simplify(?:\s+this)?|make\s+it\s+simpler|explain\s+simpler|eli5|explain\s+like\s+i'm\s+five)$/i.test(
       normalized,
     )
   ) {
@@ -352,7 +365,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:give(?:\s+me)?\s+(?:an\s+)?example|can\s+you\s+give\s+(?:an\s+)?example|provide\s+(?:an\s+)?example|example\s+please)$/i.test(
+    /^(?:give(?:\s+me)?\s+(?:an\s+|another\s+)?example|can\s+you\s+give\s+(?:an\s+|another\s+)?example|provide\s+(?:an\s+|another\s+)?example|another\s+example|example\s+please)$/i.test(
       normalized,
     )
   ) {
@@ -566,7 +579,18 @@ export function classifyIntent(
     };
   }
 
-  // 11. Teach / Quiz specific topic
+  // 11. Next topic / Change topic
+  if (/^(?:next\s+topic|change\s+topic|switch\s+topic|move\s+to\s+next\s+topic)$/i.test(normalized)) {
+    return {
+      intent: "CHANGE_TOPIC",
+      confidence: 0.98,
+      args: { topic: "next" },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  // 12. Teach / Quiz specific topic
   const teachMatch = normalized.match(/^(?:teach|explain|tell)\s+(?:me\s+)?(?:about\s+)?([a-z0-9\s-]+)$/i);
   if (teachMatch && teachMatch[1]) {
     const topic = teachMatch[1].trim();

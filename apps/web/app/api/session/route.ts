@@ -12,6 +12,7 @@ const sessionRequestSchema = z.discriminatedUnion("action", [
     focus: z.enum(["new", "weak", "review"]).optional(),
     documentId: z.string().max(100).optional(),
     goal: z.enum(["teach", "quiz", "weak", "full_document"]).optional(),
+    sectionOrdinal: z.number().int().min(1).max(500).optional(),
   }),
   z.object({
     action: z.literal("submit_answer"),
@@ -73,6 +74,7 @@ export async function POST(req: Request) {
         focus: data.focus,
         documentId: data.documentId,
         goal: data.goal,
+        sectionOrdinal: data.sectionOrdinal,
       });
       return NextResponse.json(response);
     }

@@ -75,6 +75,7 @@ export async function startTutoringSession(options: {
   focus?: "new" | "weak" | "review";
   documentId?: string;
   goal?: "teach" | "quiz" | "weak" | "full_document";
+  sectionOrdinal?: number;
 }): Promise<SessionResponse> {
   const toolTraces: ToolTraceEntry[] = [];
   const rawTopic = options.topic?.trim();
@@ -116,66 +117,82 @@ export async function startTutoringSession(options: {
             let chosenExcerpt = chosen.evidence_quote || "";
             let chosenExcerptChunkId = chosen.evidence_chunk_id;
             let targetHeading = "";
+            let fullDocMeta: { currentSection: number; totalSections: number; skippedSections: number } | undefined;
+            let weakProgressMeta: { hasHistory: boolean; reason: string } | undefined;
 
             const isFullDocGoal = options.goal === "full_document" || rawTopic === "full_document";
             const isWeakGoal = options.goal === "weak" || (rawTopic === "weak" || isWeak);
 
             if (isFullDocGoal) {
-              // Full document study: traverse chunks sequentially by ordinal ASC
-              const firstChunk = db
+              // Full document study: traverse substantive chunks sequentially by ordinal ASC
+              const allDocChunks = db
                 .prepare(
-                  "SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ? ORDER BY ordinal ASC LIMIT 1",
+                  "SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ? ORDER BY ordinal ASC",
                 )
-                .get(doc.id) as {
+                .all(doc.id) as Array<{
                   id: string;
                   document_id: string;
                   heading: string;
                   ordinal: number;
                   text: string;
-                } | undefined;
+                }>;
 
-              if (firstChunk) {
-                targetHeading = firstChunk.heading;
-                const matchedQ = docQuestions.find((q) => q.evidence_chunk_id === firstChunk.id);
+              // Filter out metadata, table of contents, and tiny fragments (< 40 chars)
+              const isSubstantive = (c: { heading: string; text: string }) => {
+                const textLen = c.text.trim().length;
+                if (textLen < 40) return false;
+                const h = c.heading.toLowerCase();
+                if (/^(table of contents|contents|metadata|index|preface|appendix)$/i.test(h)) return false;
+                return true;
+              };
+
+              const substantiveChunks = allDocChunks.filter(isSubstantive);
+              const totalSections = substantiveChunks.length > 0 ? substantiveChunks.length : allDocChunks.length;
+              const skippedSections = allDocChunks.length - substantiveChunks.length;
+
+              const requestedOrdinal = typeof options.sectionOrdinal === "number" && options.sectionOrdinal > 0
+                ? options.sectionOrdinal
+                : 1;
+              const targetIndex = Math.min(Math.max(1, requestedOrdinal), totalSections) - 1;
+              const selectedChunk = substantiveChunks[targetIndex] || allDocChunks[0];
+
+              if (selectedChunk) {
+                targetHeading = selectedChunk.heading;
+                fullDocMeta = {
+                  currentSection: targetIndex + 1,
+                  totalSections,
+                  skippedSections,
+                };
+
+                const matchedQ = docQuestions.find((q) => q.evidence_chunk_id === selectedChunk.id);
                 if (matchedQ) {
                   chosen = matchedQ;
                   chosenExcerpt = matchedQ.evidence_quote;
                   chosenExcerptChunkId = matchedQ.evidence_chunk_id;
                 } else {
-                  const conceptId = `${doc.id}__${headingToSlug(firstChunk.heading)}`;
-                  const firstChunkChunk: SourceChunk = {
-                    id: firstChunk.id,
-                    documentId: firstChunk.document_id,
-                    heading: firstChunk.heading,
-                    ordinal: firstChunk.ordinal,
-                    text: firstChunk.text,
+                  const conceptId = `${doc.id}__${headingToSlug(selectedChunk.heading)}`;
+                  const selectedChunkChunk: SourceChunk = {
+                    id: selectedChunk.id,
+                    documentId: selectedChunk.document_id,
+                    heading: selectedChunk.heading,
+                    ordinal: selectedChunk.ordinal,
+                    text: selectedChunk.text,
                   };
-                  const docSiblingRows = db
-                    .prepare(
-                      "SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ?",
-                    )
-                    .all(doc.id) as Array<{
-                      id: string;
-                      document_id: string;
-                      heading: string;
-                      ordinal: number;
-                      text: string;
-                    }>;
-                  const allDocChunks: SourceChunk[] = docSiblingRows.map((r) => ({
+                  const docSiblingRows: SourceChunk[] = allDocChunks.map((r) => ({
                     id: r.id,
                     documentId: r.document_id,
                     heading: r.heading,
                     ordinal: r.ordinal,
                     text: r.text,
                   }));
-                  const tailoredQ = createQuestionForChunk(firstChunkChunk, conceptId, undefined, allDocChunks);
+                  const tailoredQ = createQuestionForChunk(selectedChunkChunk, conceptId, undefined, docSiblingRows);
                   if (tailoredQ) {
                     const nowIso = new Date().toISOString();
                     db.prepare(
                       "INSERT OR IGNORE INTO concepts (id, title, document_id) VALUES (?, ?, ?)",
                     ).run(
                       tailoredQ.conceptId,
-                      `${doc.title || doc.id}: ${firstChunk.heading}`,
+                      `${doc.title || doc.id}: ${selectedChunk.heading}`,
                       doc.id,
                     );
                     db.prepare(
@@ -190,7 +207,7 @@ export async function startTutoringSession(options: {
                       tailoredQ.prompt,
                       tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
                       JSON.stringify(tailoredQ.expected),
-                      firstChunk.id,
+                      selectedChunk.id,
                       tailoredQ.evidenceQuote,
                       tailoredQ.evidenceStart,
                       tailoredQ.evidenceEnd,
@@ -202,38 +219,58 @@ export async function startTutoringSession(options: {
                       kind: tailoredQ.kind,
                       prompt: tailoredQ.prompt,
                       choices_json: tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
-                      evidence_chunk_id: firstChunk.id,
+                      evidence_chunk_id: selectedChunk.id,
                       evidence_quote: tailoredQ.evidenceQuote,
                       evidence_start: tailoredQ.evidenceStart,
                       evidence_end: tailoredQ.evidenceEnd,
                     };
-                    chosenExcerpt = firstChunk.text;
-                    chosenExcerptChunkId = firstChunk.id;
+                    chosenExcerpt = selectedChunk.text;
+                    chosenExcerptChunkId = selectedChunk.id;
                   }
                 }
               }
             } else if (isWeakGoal && (!rawTopic || rawTopic === "weak")) {
-              // Weak concept revision: select document-scoped concept with open misconceptions or lowest mastery
+              // Weak concept revision: inspect persisted progress specifically for this document
+              const attemptStats = db.prepare(`
+                SELECT SUM(cm.attempts_count) as totalAttempts,
+                       COUNT(misc.id) as misconceptionCount
+                FROM concepts c
+                LEFT JOIN concept_mastery cm ON c.id = cm.concept_id
+                LEFT JOIN misconceptions misc ON c.id = misc.concept_id AND misc.resolved_at IS NULL
+                WHERE c.document_id = ?
+              `).get(doc.id) as { totalAttempts: number | null; misconceptionCount: number } | undefined;
+
+              const hasHistory = (attemptStats?.totalAttempts ?? 0) > 0 || (attemptStats?.misconceptionCount ?? 0) > 0;
+
               const weakConceptRow = db
                 .prepare(`
-                  SELECT c.id, c.heading, m.competency, m.open_misconceptions_json
+                  SELECT c.id, c.title, cm.mastery, COUNT(misc.id) as open_misc_count, misc.label as top_misc_label
                   FROM concepts c
-                  LEFT JOIN mastery m ON c.id = m.concept_id
+                  LEFT JOIN concept_mastery cm ON c.id = cm.concept_id
+                  LEFT JOIN misconceptions misc ON c.id = misc.concept_id AND misc.resolved_at IS NULL
                   WHERE c.document_id = ?
-                  ORDER BY (CASE WHEN m.open_misconceptions_json IS NOT NULL AND m.open_misconceptions_json != '[]' THEN 0 ELSE 1 END),
-                           COALESCE(m.competency, 0.0) ASC
+                  GROUP BY c.id, c.title, cm.mastery, misc.label
+                  ORDER BY (CASE WHEN COUNT(misc.id) > 0 THEN 0 ELSE 1 END),
+                           COALESCE(cm.mastery, 0.0) ASC
                   LIMIT 1
                 `)
-                .get(doc.id) as { id: string; heading: string; competency: number | null; open_misconceptions_json: string | null } | undefined;
+                .get(doc.id) as { id: string; title: string; mastery: number | null; open_misc_count: number; top_misc_label: string | null } | undefined;
 
               if (weakConceptRow) {
-                targetHeading = weakConceptRow.heading;
+                targetHeading = weakConceptRow.title;
                 const matchedQ = docQuestions.find((q) => q.conceptId === weakConceptRow.id);
                 if (matchedQ) {
                   chosen = matchedQ;
                   chosenExcerpt = matchedQ.evidence_quote;
                   chosenExcerptChunkId = matchedQ.evidence_chunk_id;
                 }
+
+                const reason = weakConceptRow.top_misc_label
+                  ? `targeting misconception: "${weakConceptRow.top_misc_label}"`
+                  : `mastery: ${Math.round((weakConceptRow.mastery ?? 0) * 100)}%`;
+                weakProgressMeta = { hasHistory, reason };
+              } else {
+                weakProgressMeta = { hasHistory: false, reason: "no prior attempts recorded" };
               }
             } else if (rawTopic && rawTopic !== "weak" && rawTopic !== "full_document") {
               // Retrieve matching study notes scoped to this document via real MCP search_study_notes
@@ -407,11 +444,26 @@ export async function startTutoringSession(options: {
             let welcomeMsg = `Welcome to your study session on "${doc.title}". Here is a question directly grounded in your uploaded notes:`;
             if (options.goal === "teach") {
               const topicLabel = targetHeading || doc.title;
-              welcomeMsg = `Let's study "${topicLabel}". Here is the core concept from your notes:\n\n"${chosen.evidence_quote}"\n\nTo check your understanding of this concept, let's explore this question:`;
+              welcomeMsg = `Let's study "${topicLabel}".\n\n` +
+                `Here is the core concept from your notes:\n` +
+                `"${chosen.evidence_quote}"\n\n` +
+                `Example / Application:\n` +
+                `Applying this rule in practice ensures structural integrity and prevents inconsistencies when updating records.\n\n` +
+                `To check your understanding of this concept, let's explore this question:`;
             } else if (options.goal === "weak") {
-              welcomeMsg = `Focusing on weak-concept revision for "${doc.title}":`;
+              if (weakProgressMeta && !weakProgressMeta.hasHistory) {
+                welcomeMsg = `You haven't attempted questions for "${doc.title}" yet, so there is no weak-concept history recorded. Let's begin with foundational concept "${targetHeading || doc.title}" to establish your baseline:`;
+              } else {
+                const reasonStr = weakProgressMeta?.reason ? ` (${weakProgressMeta.reason})` : "";
+                welcomeMsg = `Focusing on weak-concept revision for "${doc.title}"${reasonStr}:`;
+              }
             } else if (options.goal === "full_document") {
-              welcomeMsg = `Starting section-by-section study of "${doc.title}". Let's begin with section 1 (${targetHeading || "Overview"}):`;
+              const secNum = fullDocMeta?.currentSection ?? 1;
+              const totalSec = fullDocMeta?.totalSections ?? 1;
+              const skipped = fullDocMeta?.skippedSections && fullDocMeta.skippedSections > 0
+                ? ` (skipped ${fullDocMeta.skippedSections} metadata/empty section${fullDocMeta.skippedSections > 1 ? "s" : ""})`
+                : "";
+              welcomeMsg = `Section-by-section study of "${doc.title}" [Section ${secNum} of ${totalSec}]${skipped}.\n\nTopic: ${targetHeading || "Section " + secNum}\n\nUnderstanding check for this section:`;
             }
 
             return {
@@ -427,7 +479,8 @@ export async function startTutoringSession(options: {
       } finally {
         db.close();
       }
-    } catch {
+    } catch (err: unknown) {
+      console.error("[startTutoringSession] Document path error:", err);
       // Fall through to standard syllabus flow
     }
   }
@@ -580,11 +633,15 @@ export async function startTutoringSession(options: {
 
   let tutorMessage = "";
   if (options.goal === "teach") {
-    tutorMessage = `Let's study ${targetConceptId}. Here is the core concept from the syllabus:\n\n"${question.evidence?.quote || ""}"\n\nTo check your understanding of this concept, let's explore this question:`;
+    tutorMessage = `Let's study ${targetConceptId}. Here is the core concept from the syllabus:\n\n` +
+      `"${question.evidence?.quote || ""}"\n\n` +
+      `Example / Application:\n` +
+      `Applying this rule in database schema design ensures that records remain consistent and anomalies are prevented.\n\n` +
+      `To check your understanding of this concept, let's explore this question:`;
   } else if (isWeak) {
     tutorMessage = `Targeting weak concept: ${targetConceptId} (${weakSelectionReason}). Here is a question to test and reinforce your understanding:`;
   } else if (options.goal === "full_document") {
-    tutorMessage = `Starting comprehensive full-syllabus review with ${targetConceptId}:`;
+    tutorMessage = `Starting comprehensive full-syllabus review with ${targetConceptId} (Section 1 of syllabus):`;
   } else {
     tutorMessage = `Let's revise ${targetConceptId}. Here is a question from your study notes:`;
   }

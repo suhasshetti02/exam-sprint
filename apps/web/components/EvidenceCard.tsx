@@ -98,6 +98,8 @@ interface EvidenceCardProps {
   recoveryCitation?: EvidenceData;
   isLoading?: boolean;
   activeDocumentTitle?: string;
+  isAnswered?: boolean;
+  activeGoal?: "teach" | "quiz" | "weak" | "full_document";
   onExplainSimply?: () => void;
   onGiveExample?: () => void;
   onQuizMe?: () => void;
@@ -108,6 +110,8 @@ export function EvidenceCard({
   recoveryCitation,
   isLoading,
   activeDocumentTitle,
+  isAnswered = false,
+  activeGoal,
   onExplainSimply,
   onGiveExample,
   onQuizMe,
@@ -115,17 +119,27 @@ export function EvidenceCard({
   const displayEvidence = recoveryCitation || evidence;
   const isRecovery = Boolean(recoveryCitation);
   const isVerified = displayEvidence?.status === "verified";
-  const badge = isRecovery
-    ? "Misconception note citation"
-    : isVerified
-      ? "Verified quote"
-      : displayEvidence?.status === "rejected"
-        ? "Rejected quote"
-        : undefined;
+  const isGated = !isRecovery && !isAnswered && (activeGoal === "quiz" || activeGoal === "weak");
 
-  const panelTitle = isRecovery
-    ? "Note evidence to correct misunderstanding"
-    : "Why is this answer correct?";
+  const badge = isGated
+    ? "Hidden during assessment"
+    : isRecovery
+      ? "Misconception note citation"
+      : isVerified
+        ? "Verified quote"
+        : displayEvidence?.status === "rejected"
+          ? "Rejected quote"
+          : undefined;
+
+  const panelTitle = isGated
+    ? "Source Evidence (Locked)"
+    : isRecovery
+      ? "Note evidence to correct misunderstanding"
+      : activeGoal === "teach"
+        ? "Verified Note Material"
+        : activeGoal === "full_document"
+          ? "Section Evidence Passage"
+          : "Why is this answer correct?";
 
   const { before, highlighted, after, offsetStatus } = displayEvidence
     ? renderHighlightedEvidence(
@@ -147,6 +161,20 @@ export function EvidenceCard({
       {isLoading ? (
         <div className="py-5 text-center text-xs sm:text-sm text-amber-300/80">
           <p className="animate-pulse">Retrieving and verifying note evidence…</p>
+        </div>
+      ) : isGated ? (
+        <div
+          data-testid="evidence-gated-panel"
+          className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-4 sm:p-5 text-center space-y-2.5 my-1"
+        >
+          <div className="flex items-center justify-center gap-2 text-amber-400 font-medium text-xs sm:text-sm">
+            <ShieldCheck className="size-4" />
+            <span>Evidence Hidden During Assessment</span>
+          </div>
+          <p className="text-xs text-stone-300/90 leading-relaxed max-w-sm mx-auto">
+            The verified note quotation is temporarily hidden to evaluate your independent understanding.
+            Submit your answer to reveal the exact source quotation, technical provenance, and textbook explanation.
+          </p>
         </div>
       ) : !displayEvidence ? (
         <EmptyState title="No evidence quotation yet">

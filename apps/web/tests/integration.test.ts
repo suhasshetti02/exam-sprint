@@ -1,32 +1,48 @@
+import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GET, POST } from "../app/api/session/route";
 import type { SessionResponse } from "../lib/api-client";
+import { getServerConfig } from "../lib/server/config";
 
 describe("Milestone 3: Server-side Tutoring Integration & Flow", () => {
   let serverInstance: Server | null = null;
 
   beforeAll(async () => {
+    // 1. Check if an isolated test MCP server is already configured and healthy (e.g. from globalSetup)
+    const { MCP_SERVER_URL } = getServerConfig();
     try {
-      const res = await fetch("http://127.0.0.1:3001/healthz");
+      const healthUrl = new URL("/healthz", MCP_SERVER_URL).toString();
+      const res = await fetch(healthUrl);
       if (res.ok) return;
     } catch {
-      // Server is not running; start in-process instance on 3001
+      // Server not reachable; start an isolated instance below
     }
 
+    // 2. Standalone execution: start an isolated instance on an ephemeral dynamic port (listen(0))
+    // Never silently reuse an arbitrary server on port 3001
     try {
       const { createApp } = await import("../../../apps/mcp-server/src/app");
       const app = createApp();
-      serverInstance = app.listen(3001, "127.0.0.1");
-      await new Promise<void>((resolve) => serverInstance!.once("listening", () => resolve()));
-    } catch {
-      // Non-fatal if another worker started it
+      serverInstance = app.listen(0, "127.0.0.1");
+      await new Promise<void>((resolve, reject) => {
+        serverInstance!.once("listening", () => resolve());
+        serverInstance!.once("error", (err) => reject(err));
+      });
+      const addr = serverInstance.address() as AddressInfo;
+      if (!addr || typeof addr.port !== "number") {
+        throw new Error("Could not determine dynamic port for test MCP server");
+      }
+      process.env.MCP_SERVER_URL = `http://127.0.0.1:${addr.port}/mcp`;
+    } catch (err) {
+      throw new Error(`Failed to guarantee isolated MCP test server: ${err}`);
     }
   });
 
   afterAll(async () => {
     if (serverInstance) {
       await new Promise<void>((resolve) => serverInstance!.close(() => resolve()));
+      serverInstance = null;
     }
   });
   it("handles validation errors and malformed bodies safely", async () => {
@@ -248,7 +264,12 @@ describe("Milestone 3: Server-side Tutoring Integration & Flow", () => {
       });
       const startRes = await POST(startReq);
       const startBody = (await startRes.json()) as SessionResponse;
-      const activeQId = startBody.question!.questionId;
+      const activeQ = startBody.question!;
+      const activeQId = activeQ.questionId;
+      const answer =
+        activeQ.kind === "multiple_choice"
+          ? "A"
+          : "Its changes survive a crash";
 
       // 2. Submit answer for the exact active question ID
       const submitReq = new Request("http://localhost:3000/api/session", {
@@ -257,7 +278,7 @@ describe("Milestone 3: Server-side Tutoring Integration & Flow", () => {
         body: JSON.stringify({
           action: "submit_answer",
           questionId: activeQId,
-          answer: "Its changes survive a crash",
+          answer,
         }),
       });
       const submitRes = await POST(submitReq);

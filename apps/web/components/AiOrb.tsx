@@ -1,12 +1,13 @@
 "use client";
 
-import { Sparkles, MicOff } from "lucide-react";
+import { Sparkles, Volume2 } from "lucide-react";
 
 interface AiOrbProps {
   isLoading?: boolean;
   statusText?: string;
   providerType?: "llm" | "deterministic_fallback";
   modelName?: string;
+  voiceStatusText?: string;
 }
 
 export function AiOrb({
@@ -14,6 +15,7 @@ export function AiOrb({
   statusText,
   providerType = "llm",
   modelName = "Gemini",
+  voiceStatusText,
 }: AiOrbProps) {
   const isAiLive = providerType === "llm";
 
@@ -63,13 +65,13 @@ export function AiOrb({
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
               isAiLive
                 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                : "bg-stone-900/80 text-stone-400 border border-stone-800"
+                : "bg-stone-900/80 text-stone-300 border border-stone-800"
             }`}
           >
             <span
               className={`size-1.5 rounded-full ${isAiLive ? "bg-amber-400 animate-ping" : "bg-stone-500"}`}
             />
-            {isAiLive ? modelName : "Offline Engine"}
+            {isAiLive ? modelName : "Deterministic Engine"}
           </span>
         </div>
 
@@ -79,10 +81,12 @@ export function AiOrb({
             : "Conversational exam revision grounded in verified notes"}
         </p>
 
-        {/* Voice capability disclaimer (truthful, non-deceptive) */}
-        <div className="flex items-center gap-1.5 text-[10px] text-stone-500 mt-1">
-          <MicOff className="size-3 text-stone-500" />
-          <span>Audio input future capability · Text command center active</span>
+        {/* Real Active Voice & Spoken capability indicator */}
+        <div className="flex items-center gap-1.5 text-[10px] text-stone-400 mt-1">
+          <Volume2 className="size-3 text-amber-400 shrink-0" />
+          <span className="truncate">
+            {voiceStatusText || "Voice tutor active · Spoken answers, audio output & commands"}
+          </span>
         </div>
       </div>
     </div>

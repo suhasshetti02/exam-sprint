@@ -30,6 +30,8 @@ export interface EvidenceReference {
   /** Character offsets of the quote inside the chunk text, set by the verifier. */
   start?: number;
   end?: number;
+  /** Full text of the cited source chunk to provide surrounding context. */
+  sourceContext?: string;
 }
 
 export type VerificationStatus = "verified" | "unverified" | "rejected";

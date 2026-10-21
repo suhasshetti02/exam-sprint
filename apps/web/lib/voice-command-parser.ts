@@ -554,7 +554,8 @@ export function classifyIntent(
   if (
     /^(?:what\s+is|what\s+are|how\s+does|how\s+do|why\s+does|tell\s+me\s+about|define|explain\s+how)\s+([a-z0-9\s-]+)$/i.test(
       normalized,
-    )
+    ) ||
+    /^what\s+does\s+(?:the\s+term\s+|this\s+term\s+)?([a-z0-9\s-]+?)\s+mean$/i.test(normalized)
   ) {
     return {
       intent: "ASK_STUDY_QUESTION",

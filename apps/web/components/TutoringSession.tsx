@@ -40,6 +40,13 @@ interface SavedSession {
   savedAt: string;
 }
 
+const GOAL_LABELS: Record<LearningGoal, { label: string; icon: string }> = {
+  teach: { label: "Teach Material", icon: "📖" },
+  quiz: { label: "Quiz on Topic", icon: "❓" },
+  weak: { label: "Revise Weak Concepts", icon: "🎯" },
+  full_document: { label: "Full Document Study", icon: "📚" },
+};
+
 export function TutoringSession() {
   const [isSessionActive, setIsSessionActive] = useState(false);
   const [activeDocumentId, setActiveDocumentId] = useState<string>("dbms-normalization");
@@ -195,6 +202,7 @@ export function TutoringSession() {
       setCurrentQuestion(undefined);
       setCurrentEvidence(undefined);
       setLatestEvaluation(undefined);
+      latestEvaluationRef.current = undefined;
       setMessages([
         {
           id: `welcome-${config.documentId}`,
@@ -290,6 +298,7 @@ export function TutoringSession() {
         setCurrentQuestion(res.question);
         setCurrentEvidence(res.evidence);
         setLatestEvaluation(undefined);
+        latestEvaluationRef.current = undefined;
         q = res.question;
         ev = res.evidence;
       } else if (!res.question) {
@@ -488,6 +497,7 @@ export function TutoringSession() {
     cancelAutoAdvance();
     setSelectedOption(undefined);
     setLatestEvaluation(undefined);
+    latestEvaluationRef.current = undefined;
     if (currentQuestion) {
       handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, "quiz");
     } else {
@@ -846,6 +856,35 @@ export function TutoringSession() {
     await handleStartTopic(trimmed);
   };
 
+  const handleExplainSimply = () => {
+    if (latestEvaluation?.explanation) {
+      const text = `In simpler terms: ${latestEvaluation.explanation.split(".")[0]}.`;
+      setMessages((prev) => [
+        ...prev,
+        { id: `tutor_${Date.now()}`, role: "tutor", text, timestamp: new Date().toISOString() },
+      ]);
+      if (voice.voiceOutputEnabled) voice.speak(text);
+    } else if (currentEvidence?.quote) {
+      handleAskStudyQuestion(`Explain this in simpler terms: "${currentEvidence.quote.slice(0, 100)}"`);
+    }
+  };
+
+  const handleGiveExample = () => {
+    if (currentEvidence?.quote) {
+      handleAskStudyQuestion(`Can you give an illustrative example of this concept from the notes: "${currentEvidence.quote.slice(0, 100)}"?`);
+    } else if (currentQuestion) {
+      handleAskStudyQuestion(`Can you give an example for: "${currentQuestion.prompt}"?`);
+    }
+  };
+
+  const handleQuizMeOnEvidence = () => {
+    if (currentQuestion?.conceptId) {
+      handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, "quiz");
+    } else if (suggestedTopics[0]?.topic) {
+      handleStartTopic(suggestedTopics[0].topic, "new", activeDocumentId, "quiz");
+    }
+  };
+
   const handleChallengeCompleted = (
     _updated: MasteryConcept[],
     traces: ToolTraceEntry[],
@@ -914,12 +953,23 @@ export function TutoringSession() {
             </div>
           )}
 
-          {/* AI Status Badge */}
+          {/* Active Learning Goal Badge */}
+          {isSessionActive && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900 border border-stone-800 text-xs text-stone-300">
+              <span className="text-amber-400 text-xs">{GOAL_LABELS[activeGoal]?.icon}</span>
+              <span className="text-[10px] text-stone-500 uppercase font-bold hidden sm:inline">Goal:</span>
+              <span className="font-semibold text-stone-200">
+                {GOAL_LABELS[activeGoal]?.label || activeGoal}
+              </span>
+            </div>
+          )}
+
+          {/* Active Response Engine Badge */}
           <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/80 border border-stone-800 text-xs text-stone-300">
             <span className={`size-2 rounded-full ${isAiLive ? "bg-amber-400 animate-ping" : "bg-stone-500"}`} />
             <Activity className="size-3 text-amber-400" />
             <span className="font-medium text-[11px]">
-              {isAiLive ? `Live AI (${modelName})` : "Deterministic Fallback"}
+              {isAiLive ? `Response: Live AI (${modelName})` : "Response: Deterministic Engine"}
             </span>
           </div>
 
@@ -1003,6 +1053,7 @@ export function TutoringSession() {
               providerType={isAiLive ? "llm" : "deterministic_fallback"}
               modelName={modelName}
               activeMaterialTitle={activeDocumentTitle}
+              activeGoal={activeGoal}
               suggestedTopics={suggestedTopics}
               voiceController={voice}
               progressionMode={progressionMode}
@@ -1031,12 +1082,16 @@ export function TutoringSession() {
             <EvidenceCard
               evidence={currentEvidence}
               recoveryCitation={latestEvaluation?.recoveryCitation}
+              activeDocumentTitle={activeDocumentTitle}
+              onExplainSimply={handleExplainSimply}
+              onGiveExample={handleGiveExample}
+              onQuizMe={handleQuizMeOnEvidence}
             />
           </div>
 
           {/* Right Column — Student Mastery & Server Diagnostics */}
-          <div className="lg:col-span-4 h-full flex flex-col min-h-0 gap-3.5 overflow-hidden">
-            <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="lg:col-span-4 h-full flex flex-col min-h-0 gap-3.5 overflow-y-auto pr-0.5">
+            <div className="shrink-0">
               <MasteryPanel
                 masteryList={masteryList}
                 onSelectConcept={(conceptId) => handleStartTopic(conceptId)}
@@ -1044,7 +1099,7 @@ export function TutoringSession() {
               />
             </div>
             <div className="shrink-0 flex flex-col gap-2">
-              <ServerStatus toolTraces={toolTraces} />
+              <ServerStatus toolTraces={toolTraces} lastResponseEngine={currentProvider} />
               <button
                 type="button"
                 onClick={() => setShowStatusChecklist(!showStatusChecklist)}

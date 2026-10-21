@@ -16,9 +16,10 @@ type ViewState =
 
 interface ServerStatusProps {
   toolTraces?: ToolTraceEntry[];
+  lastResponseEngine?: "llm" | "deterministic_fallback";
 }
 
-export function ServerStatus({ toolTraces = [] }: ServerStatusProps) {
+export function ServerStatus({ toolTraces = [], lastResponseEngine }: ServerStatusProps) {
   const [state, setState] = useState<ViewState>({ phase: "loading" });
   const [expandedTraceIdx, setExpandedTraceIdx] = useState<number | null>(null);
 
@@ -75,11 +76,11 @@ export function ServerStatus({ toolTraces = [] }: ServerStatusProps) {
             <div className="flex items-center justify-between text-xs pb-1.5 border-b border-stone-800/70">
               <span className="text-stone-400 font-medium flex items-center gap-1.5">
                 <Activity className="size-3 text-amber-400" />
-                <span>Orchestration:</span>
+                <span>LLM Provider:</span>
               </span>
               <span
                 className={`font-semibold flex items-center gap-1 ${
-                  state.status.provider?.configured ? "text-amber-400" : "text-stone-300"
+                  state.status.provider?.configured ? "text-amber-400" : "text-stone-400"
                 }`}
               >
                 <span
@@ -88,10 +89,19 @@ export function ServerStatus({ toolTraces = [] }: ServerStatusProps) {
                   }`}
                 />
                 {state.status.provider?.configured
-                  ? `Live AI (${state.status.provider.model || "Gemini"})`
-                  : "Deterministic Fallback (Offline)"}
+                  ? `Configured (${state.status.provider.model || "Gemini"})`
+                  : "Not Configured (Offline Fallback)"}
               </span>
             </div>
+
+            {lastResponseEngine && (
+              <div className="flex items-center justify-between text-[11px] pb-1 border-b border-stone-800/60 text-stone-400">
+                <span>Active Response Engine:</span>
+                <span className="font-mono text-stone-200 font-semibold">
+                  {lastResponseEngine === "llm" ? "Live AI (Agent Loop)" : "Deterministic Policy"}
+                </span>
+              </div>
+            )}
 
             <p className="text-[11px] text-emerald-400 font-medium">
               Connected to {state.status.serverName} v{state.status.serverVersion} ·{" "}

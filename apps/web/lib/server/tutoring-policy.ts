@@ -108,8 +108,101 @@ export async function startTutoringSession(options: {
             let chosen: typeof docQuestions[0] | undefined = docQuestions[0]!;
             let chosenExcerpt = chosen.evidence_quote || "";
             let chosenExcerptChunkId = chosen.evidence_chunk_id;
+            let targetHeading = "";
 
-            if (rawTopic) {
+            const isFullDocGoal = options.goal === "full_document" || rawTopic === "full_document";
+            const isWeakGoal = options.goal === "weak" || (rawTopic === "weak" || isWeak);
+
+            if (isFullDocGoal) {
+              // Full document study: traverse chunks sequentially by ordinal ASC
+              const firstChunk = db
+                .prepare(
+                  "SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ? ORDER BY ordinal ASC LIMIT 1",
+                )
+                .get(doc.id) as {
+                  id: string;
+                  document_id: string;
+                  heading: string;
+                  ordinal: number;
+                  text: string;
+                } | undefined;
+
+              if (firstChunk) {
+                targetHeading = firstChunk.heading;
+                const matchedQ = docQuestions.find((q) => q.evidence_chunk_id === firstChunk.id);
+                if (matchedQ) {
+                  chosen = matchedQ;
+                  chosenExcerpt = matchedQ.evidence_quote;
+                  chosenExcerptChunkId = matchedQ.evidence_chunk_id;
+                } else {
+                  const conceptId = `${doc.id}__${headingToSlug(firstChunk.heading)}`;
+                  const firstChunkChunk: SourceChunk = {
+                    id: firstChunk.id,
+                    documentId: firstChunk.document_id,
+                    heading: firstChunk.heading,
+                    ordinal: firstChunk.ordinal,
+                    text: firstChunk.text,
+                  };
+                  const docSiblingRows = db
+                    .prepare(
+                      "SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ?",
+                    )
+                    .all(doc.id) as Array<{
+                      id: string;
+                      document_id: string;
+                      heading: string;
+                      ordinal: number;
+                      text: string;
+                    }>;
+                  const allDocChunks: SourceChunk[] = docSiblingRows.map((r) => ({
+                    id: r.id,
+                    documentId: r.document_id,
+                    heading: r.heading,
+                    ordinal: r.ordinal,
+                    text: r.text,
+                  }));
+                  const tailoredQ = createQuestionForChunk(firstChunkChunk, conceptId, undefined, allDocChunks);
+                  if (tailoredQ) {
+                    chosen = {
+                      id: tailoredQ.id,
+                      conceptId: tailoredQ.conceptId,
+                      kind: tailoredQ.kind,
+                      prompt: tailoredQ.prompt,
+                      choices_json: JSON.stringify(tailoredQ.choices),
+                      evidence_chunk_id: firstChunk.id,
+                      evidence_quote: tailoredQ.evidenceQuote,
+                      evidence_start: tailoredQ.evidenceStart,
+                      evidence_end: tailoredQ.evidenceEnd,
+                    };
+                    chosenExcerpt = firstChunk.text;
+                    chosenExcerptChunkId = firstChunk.id;
+                  }
+                }
+              }
+            } else if (isWeakGoal && (!rawTopic || rawTopic === "weak")) {
+              // Weak concept revision: select document-scoped concept with open misconceptions or lowest mastery
+              const weakConceptRow = db
+                .prepare(`
+                  SELECT c.id, c.heading, m.competency, m.open_misconceptions_json
+                  FROM concepts c
+                  LEFT JOIN mastery m ON c.id = m.concept_id
+                  WHERE c.document_id = ?
+                  ORDER BY (CASE WHEN m.open_misconceptions_json IS NOT NULL AND m.open_misconceptions_json != '[]' THEN 0 ELSE 1 END),
+                           COALESCE(m.competency, 0.0) ASC
+                  LIMIT 1
+                `)
+                .get(doc.id) as { id: string; heading: string; competency: number | null; open_misconceptions_json: string | null } | undefined;
+
+              if (weakConceptRow) {
+                targetHeading = weakConceptRow.heading;
+                const matchedQ = docQuestions.find((q) => q.conceptId === weakConceptRow.id);
+                if (matchedQ) {
+                  chosen = matchedQ;
+                  chosenExcerpt = matchedQ.evidence_quote;
+                  chosenExcerptChunkId = matchedQ.evidence_chunk_id;
+                }
+              }
+            } else if (rawTopic && rawTopic !== "weak" && rawTopic !== "full_document") {
               // Retrieve matching study notes scoped to this document via real MCP search_study_notes
               let searchHits: SearchStudyNotesOutput["results"] = [];
               try {
@@ -145,6 +238,7 @@ export async function startTutoringSession(options: {
                   } | undefined;
 
                 if (chunkRow) {
+                  targetHeading = chunkRow.heading;
                   const chunk: SourceChunk = {
                     id: chunkRow.id,
                     documentId: chunkRow.document_id,
@@ -250,6 +344,10 @@ export async function startTutoringSession(options: {
             }
 
             const choices = chosen.choices_json ? JSON.parse(chosen.choices_json) : undefined;
+            const fullChunkRow = db
+              .prepare("SELECT text FROM chunks WHERE id = ?")
+              .get(chosen.evidence_chunk_id) as { text: string } | undefined;
+
             const questionData = {
               questionId: chosen.id,
               conceptId: chosen.conceptId,
@@ -262,16 +360,18 @@ export async function startTutoringSession(options: {
                 status: "verified" as const,
                 start: chosen.evidence_start,
                 end: chosen.evidence_end,
+                sourceContext: fullChunkRow?.text || chosenExcerpt || undefined,
               },
             };
 
             let welcomeMsg = `Welcome to your study session on "${doc.title}". Here is a question directly grounded in your uploaded notes:`;
             if (options.goal === "teach") {
-              welcomeMsg = `Let's study "${doc.title}" together. Here is a foundational question to check your understanding:`;
+              const topicLabel = targetHeading || doc.title;
+              welcomeMsg = `Let's study "${topicLabel}". Here is the core concept from your notes:\n\n"${chosen.evidence_quote}"\n\nTo check your understanding of this concept, let's explore this question:`;
             } else if (options.goal === "weak") {
-              welcomeMsg = `Focusing on revision for "${doc.title}":`;
+              welcomeMsg = `Focusing on weak-concept revision for "${doc.title}":`;
             } else if (options.goal === "full_document") {
-              welcomeMsg = `Starting section-by-section study of "${doc.title}". Let's begin with section 1:`;
+              welcomeMsg = `Starting section-by-section study of "${doc.title}". Let's begin with section 1 (${targetHeading || "Overview"}):`;
             }
 
             return {
@@ -339,6 +439,8 @@ export async function startTutoringSession(options: {
         }
       }
     }
+  } else if (options.goal === "full_document" || rawTopic === "full_document") {
+    targetConceptId = "normalization-basics";
   } else {
     // Retrieve study notes to assist resolution if needed
     let searchHits: SearchStudyNotesOutput["results"] = [];
@@ -419,9 +521,33 @@ export async function startTutoringSession(options: {
     };
   }
 
-  const tutorMessage = isWeak
-    ? `Targeting weak concept: ${targetConceptId} (${weakSelectionReason}). Here is a question to test and reinforce your understanding:`
-    : `Let's revise ${targetConceptId}. Here is a question from your study notes:`;
+  // Ensure sourceContext is attached from chunks table if not already present
+  if (!evidence.sourceContext) {
+    try {
+      const db = openDb();
+      try {
+        const chunkRow = db.prepare("SELECT text FROM chunks WHERE id = ?").get(evidence.chunkId) as { text: string } | undefined;
+        if (chunkRow?.text) {
+          (evidence as { sourceContext?: string }).sourceContext = chunkRow.text;
+        }
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  let tutorMessage = "";
+  if (options.goal === "teach") {
+    tutorMessage = `Let's study ${targetConceptId}. Here is the core concept from the syllabus:\n\n"${question.evidence?.quote || ""}"\n\nTo check your understanding of this concept, let's explore this question:`;
+  } else if (isWeak) {
+    tutorMessage = `Targeting weak concept: ${targetConceptId} (${weakSelectionReason}). Here is a question to test and reinforce your understanding:`;
+  } else if (options.goal === "full_document") {
+    tutorMessage = `Starting comprehensive full-syllabus review with ${targetConceptId}:`;
+  } else {
+    tutorMessage = `Let's revise ${targetConceptId}. Here is a question from your study notes:`;
+  }
 
   return {
     message: tutorMessage,

@@ -11,6 +11,7 @@ export const verifiedEvidenceSchema = evidenceReferenceSchema.extend({
   status: z.enum(["verified", "unverified", "rejected"]),
   start: z.number().int().nonnegative().optional(),
   end: z.number().int().nonnegative().optional(),
+  sourceContext: z.string().optional(),
 });
 
 const conceptId = z.string().min(1).max(80);

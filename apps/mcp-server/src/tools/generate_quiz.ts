@@ -85,6 +85,7 @@ export const generateQuizTool: ToolDefinition<typeof generateQuizInput> = {
             status: "verified" as const,
             start: verification.reference.start,
             end: verification.reference.end,
+            sourceContext: chunk?.text,
           },
           targetMisconception: input.misconceptionLabel,
         };

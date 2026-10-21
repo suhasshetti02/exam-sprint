@@ -124,6 +124,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const lastSubmittedTimeRef = useRef<number>(0);
   const hasPermissionErrorRef = useRef(false);
 
+  const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
+
   useEffect(() => {
     wakeWordEnabledRef.current = wakeWordEnabled;
   }, [wakeWordEnabled]);
@@ -134,11 +136,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Cleanup speech synthesis and speech recognition on unmount
   useEffect(() => {
+    const activeUtterances = activeUtterancesRef.current;
     return () => {
       if (commandTimeoutRef.current) clearTimeout(commandTimeoutRef.current);
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
+      activeUtterances.clear();
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -152,6 +156,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const stopSpeaking = useCallback(() => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
+      activeUtterancesRef.current.clear();
       isSpeakingRef.current = false;
       setVoiceState((prev) =>
         prev === "speaking" ? (wakeWordEnabledRef.current ? "wake_listening" : "disabled") : prev,
@@ -190,7 +195,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
             }
           }
 
+          if (window.speechSynthesis.paused) {
+            try {
+              window.speechSynthesis.resume();
+            } catch {
+              // Non-fatal
+            }
+          }
           window.speechSynthesis.cancel();
+          activeUtterancesRef.current.clear();
 
           // Strip markdown symbols and internal link artifacts for natural speech output
           const cleanText = text
@@ -202,6 +215,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           if (!cleanText) return;
 
           const utterance = new SpeechSynthesisUtterance(cleanText);
+          activeUtterancesRef.current.add(utterance);
           utterance.lang = "en-US";
           utterance.rate = 1.0;
           utterance.pitch = 1.0;
@@ -212,6 +226,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
           };
 
           const handleSpeechEnd = () => {
+            activeUtterancesRef.current.delete(utterance);
             isSpeakingRef.current = false;
             isProcessingRef.current = false;
             if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current) {

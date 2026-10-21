@@ -45,6 +45,8 @@ export interface QuestionData {
     status: "verified" | "unverified" | "rejected";
     start?: number;
     end?: number;
+    sourceContext?: string;
+    sourceTitle?: string;
   };
 }
 
@@ -54,6 +56,8 @@ export interface EvidenceData {
   status: "verified" | "unverified" | "rejected";
   start?: number;
   end?: number;
+  sourceContext?: string;
+  sourceTitle?: string;
 }
 
 export interface EvaluationData {

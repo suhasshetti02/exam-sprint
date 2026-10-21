@@ -174,7 +174,17 @@ export function formatConceptOrChunkTitle(rawId?: string): string {
 
   // Handle sec-<slug>
   if (rawId.startsWith("sec-")) {
-    return rawId.replace(/^sec-/, "").toUpperCase();
+    return rawId.replace(/^sec-/, "").replace(/[-_]+/g, " ").toUpperCase();
+  }
+
+  // Handle generic kebab-case or snake_case IDs (e.g. acid_properties, normalization-basics)
+  if (rawId.includes("_") || rawId.includes("-")) {
+    return rawId
+      .replace(/[_-]+/g, " ")
+      .trim()
+      .split(" ")
+      .map((w) => (w.length <= 4 && !w.includes(" ") ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+      .join(" ");
   }
 
   return rawId;

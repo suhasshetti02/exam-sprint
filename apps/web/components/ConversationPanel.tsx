@@ -38,6 +38,7 @@ interface ConversationPanelProps {
   providerType?: "llm" | "deterministic_fallback";
   modelName?: string;
   activeMaterialTitle?: string;
+  activeGoal?: "teach" | "quiz" | "weak" | "full_document";
   suggestedTopics?: DocumentTopicSuggestion[];
   voiceController?: UseVoiceReturn;
   progressionMode?: "guided" | "automatic";
@@ -63,6 +64,7 @@ export function ConversationPanel({
   providerType = "llm",
   modelName = "Gemini",
   activeMaterialTitle,
+  activeGoal,
   suggestedTopics,
   voiceController,
   progressionMode = "guided",
@@ -106,12 +108,12 @@ export function ConversationPanel({
     replay,
   } = voice;
 
-  // Automatically scroll conversation to bottom when messages update
+  // Automatically scroll conversation to bottom when messages or loading state updates
   useEffect(() => {
     if (typeof messagesEndRef.current?.scrollIntoView === "function") {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-  }, [messages]);
+  }, [messages, isLoading]);
 
   // Read tutor responses aloud if voice output is enabled
   useEffect(() => {
@@ -135,6 +137,19 @@ export function ConversationPanel({
     }
   };
 
+  const dynamicVoiceStatus =
+    voiceState === "listening_for_command"
+      ? "Listening for your voice answer or command…"
+      : voiceState === "wake_listening"
+        ? "Wake-word listening active ('Hey Tutor')…"
+        : voiceState === "speaking"
+          ? "Speaking tutor explanation aloud…"
+          : voiceState === "processing"
+            ? "Recognizing voice input…"
+            : voiceOutputEnabled
+              ? "Voice tutor active · Spoken answers, audio output & commands"
+              : "Voice tutor active (audio muted) · Voice input & commands active";
+
   return (
     <section
       className="warm-glass-panel rounded-2xl p-4 sm:p-5 flex flex-col h-full shadow-xl"
@@ -147,6 +162,7 @@ export function ConversationPanel({
           statusText={isLoading ? "Analyzing study notes & synthesizing response…" : undefined}
           providerType={providerType}
           modelName={modelName}
+          voiceStatusText={dynamicVoiceStatus}
         />
 
         {/* Real Browser Voice & Audio Controls */}
@@ -357,13 +373,26 @@ export function ConversationPanel({
           </div>
         )}
 
-        {/* Active Material Indicator */}
+        {/* Active Material Indicator & Goal Context */}
         {activeMaterialTitle && (
-          <div className="mt-2 text-[11px] text-stone-400 flex items-center gap-1.5">
-            <span className="text-stone-500">Studying:</span>
-            <span className="font-semibold text-stone-200 truncate">
-              {activeMaterialTitle}
-            </span>
+          <div className="mt-2 text-[11px] text-stone-400 flex items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-stone-500">Studying:</span>
+              <span className="font-semibold text-stone-200 truncate">
+                {activeMaterialTitle}
+              </span>
+            </div>
+            {activeGoal && (
+              <span className="text-[10px] text-amber-400/90 font-medium shrink-0">
+                {activeGoal === "teach"
+                  ? "Teaching Mode"
+                  : activeGoal === "quiz"
+                    ? "Topic Quiz"
+                    : activeGoal === "weak"
+                      ? "Remediation"
+                      : "Full Syllabus"}
+              </span>
+            )}
           </div>
         )}
 
@@ -410,7 +439,7 @@ export function ConversationPanel({
 
       {/* Contained Conversation Transcript */}
       <div
-        className="flex-1 min-h-0 overflow-y-auto py-3.5 space-y-3 pr-1"
+        className="flex-1 min-h-0 overflow-y-auto py-3.5 pb-8 space-y-3 pr-1"
         aria-live="polite"
       >
         {messages.length === 0 ? (

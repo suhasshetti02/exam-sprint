@@ -12,6 +12,7 @@ interface MasteryPanelProps {
   onSelectConcept?: (conceptId: string) => void;
   onStartChallenge?: () => void;
   isLoading?: boolean;
+  className?: string;
 }
 
 export function MasteryPanel({
@@ -20,8 +21,10 @@ export function MasteryPanel({
   onSelectConcept,
   onStartChallenge,
   isLoading,
+  className,
 }: MasteryPanelProps) {
-  const hasAttempts = masteryList && masteryList.some((m) => m.attemptsCount > 0);
+  const hasConcepts = Boolean(masteryList && masteryList.length > 0);
+  const hasAttempts = Boolean(masteryList && masteryList.some((m) => m.attemptsCount > 0));
   const hasWeakConcepts =
     masteryList &&
     masteryList.some((m) => m.openMisconceptions.length > 0 || (m.attemptsCount > 0 && m.mastery < 0.5));
@@ -31,19 +34,26 @@ export function MasteryPanel({
       title="Mastery"
       badge="Persisted (SQLite)"
       icon={<Brain className="size-4 text-amber-400" />}
+      className={`flex flex-col min-h-0 ${className || ""}`}
     >
       {isLoading && (!masteryList || masteryList.length === 0) ? (
         <div className="py-5 text-center text-xs sm:text-sm text-amber-300/80">
           <p className="animate-pulse">Loading persisted mastery…</p>
         </div>
-      ) : !hasAttempts ? (
+      ) : !hasConcepts ? (
         <EmptyState title="No progress recorded">
           After you answer questions, each concept’s mastery and any open misconceptions will be listed here.
         </EmptyState>
       ) : (
-        <div className="space-y-3">
+        <div className="flex flex-col flex-1 min-h-0 space-y-3">
+          {!hasAttempts && (
+            <p className="text-[11px] text-stone-400 italic bg-stone-900/60 border border-stone-800/80 rounded-xl p-2.5 shrink-0">
+              Syllabus concepts ready. Answer questions to record attempts and track mastery progress.
+            </p>
+          )}
+
           {hasWeakConcepts && (
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-950/20 p-2.5">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-950/20 p-2.5 shrink-0">
               <span className="text-[11px] font-medium text-amber-300 flex items-center gap-1.5">
                 <AlertTriangle className="size-3.5 text-amber-400 shrink-0" />
                 <span>You have concepts flagged for review.</span>
@@ -74,7 +84,7 @@ export function MasteryPanel({
           )}
 
           {/* Bounded Concept List Container */}
-          <div className="max-h-[220px] overflow-y-auto pr-1">
+          <div className="flex-1 min-h-[140px] max-h-[380px] overflow-y-auto pr-1">
             <ul className="divide-y divide-stone-800/70 text-xs" aria-label="Concept mastery list">
               {masteryList!.map((m) => {
                 const percentage = Math.round(m.mastery * 100);
@@ -100,8 +110,12 @@ export function MasteryPanel({
                         )}
                       </button>
                       <span className="text-stone-400 text-[11px]">
-                        {m.attemptsCount} {m.attemptsCount === 1 ? "attempt" : "attempts"} ·{" "}
-                        <span className="font-semibold text-stone-100 font-mono">{percentage}%</span>
+                        {m.attemptsCount === 0 ? (
+                          <span className="italic text-stone-500">Not assessed</span>
+                        ) : (
+                          `${m.attemptsCount} ${m.attemptsCount === 1 ? "attempt" : "attempts"} · `
+                        )}
+                        <span className="font-semibold text-stone-100 font-mono ml-1">{percentage}%</span>
                       </span>
                     </div>
 

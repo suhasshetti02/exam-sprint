@@ -47,6 +47,7 @@ export const evaluateAnswerTool: ToolDefinition<typeof evaluateAnswerInput> = {
             status: "verified" | "unverified" | "rejected";
             start?: number;
             end?: number;
+            sourceContext?: string;
           }
         | undefined;
 
@@ -64,6 +65,7 @@ export const evaluateAnswerTool: ToolDefinition<typeof evaluateAnswerInput> = {
               status: "verified",
               start: v.reference.start,
               end: v.reference.end,
+              sourceContext: chunk.text,
             };
           }
         }
@@ -78,6 +80,7 @@ export const evaluateAnswerTool: ToolDefinition<typeof evaluateAnswerInput> = {
           status: result.evidence.status,
           start: result.evidence.start,
           end: result.evidence.end,
+          sourceContext: chunk?.text,
         },
         misconceptionLabel: result.misconceptionLabel,
         conceptId: question.conceptId,

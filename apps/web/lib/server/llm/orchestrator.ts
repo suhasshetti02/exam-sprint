@@ -109,7 +109,7 @@ export async function runTutoringOrchestration(
               evidence: undefined,
               masteryList: state.masteryList,
               toolTraces: [],
-              provider: "llm",
+              provider: "deterministic_fallback",
             };
           }
 

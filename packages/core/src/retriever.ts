@@ -54,7 +54,8 @@ export function expandRetrievalQuery(query: string): string {
     { pattern: /\bthird\s+normal\s+form\b/i, terms: "3nf" },
     { pattern: /\b(bcnf|boyce[- ]codd(\s+normal\s+form)?)\b/i, terms: "boyce codd normal form bcnf" },
     { pattern: /\b(acid(\s+properties)?)\b/i, terms: "atomicity consistency isolation durability" },
-    { pattern: /\b(partial\s+(functional\s+)?dependenc(y|ies))\b/i, terms: "2nf second normal form" },
+    { pattern: /\b(partial\s+(functional\s+)?dependenc(y|ies))\b/i, terms: "2nf 2nf second normal form dependencies" },
+    { pattern: /\b(transitive\s+(functional\s+)?dependenc(y|ies))\b/i, terms: "3nf 3nf third normal form dependencies" },
   ];
 
   for (const { pattern, terms } of expansions) {

@@ -336,6 +336,14 @@ export function extractCleanSentences(text: string): string[] {
     // 6. Must not be just a section header label (e.g. "Problem Statement:")
     if (/^[A-Za-z0-9\s()_-]+:\s*$/.test(s)) continue;
 
+    // 7. Must not be a metadata header line or title (e.g. "Subject: ...", "Purpose: ...", "Author: ...")
+    if (
+      /^(subject|purpose|author|document\s+title|title|course|overview|description|uploaded\s+by|copyright|all\s+rights\s+reserved|system\s+instruction|sample\s+notes)\s*:/i.test(s) ||
+      /^(sample\s+notes\s+for\s+testing|notes\s+prepared\s+by|table\s+of\s+contents)\b/i.test(s)
+    ) {
+      continue;
+    }
+
     sentences.push(s);
   }
 
@@ -344,7 +352,9 @@ export function extractCleanSentences(text: string): string[] {
     if (
       trimmed.length >= 25 &&
       /^[A-Z"“'‘]/.test(trimmed) &&
-      !/^(and|or|but|because|during|which|while|with|by|for)\b/i.test(trimmed)
+      !/^(and|or|but|because|during|which|while|with|by|for)\b/i.test(trimmed) &&
+      !/^(subject|purpose|author|document\s+title|title|course|overview|description|uploaded\s+by|copyright|all\s+rights\s+reserved|system\s+instruction|sample\s+notes)\s*:/i.test(trimmed) &&
+      !/^(sample\s+notes\s+for\s+testing|notes\s+prepared\s+by|table\s+of\s+contents)\b/i.test(trimmed)
     ) {
       sentences.push(trimmed);
     }
@@ -453,14 +463,14 @@ export function getDocumentTopics(
 
 export const fetchDocumentTopicSuggestions = getDocumentTopics;
 
-interface ConceptQuestionTemplate {
+export interface ConceptQuestionTemplate {
   pattern: RegExp;
   prompt: string;
   distractors: string[];
   preferredSentenceMatch?: RegExp;
 }
 
-const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
+export const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
   {
     pattern: /\b(2nf|second\s+normal\s+form|partial\s+(functional\s+)?dependenc)/i,
     prompt: "Which condition must a relation satisfy to be in Second Normal Form (2NF)?",
@@ -536,9 +546,9 @@ const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
     prompt: "How is a database transaction defined according to your study notes?",
     preferredSentenceMatch: /\b(logical\s+unit|transaction\s+is)\b/i,
     distractors: [
-      "A transaction is an auxiliary disk data structure that accelerates query lookups.",
-      "A transaction is a foreign key constraint linking records across unrelated tables.",
-      "A transaction is an anomaly caused by unnormalized table structures.",
+      "A transaction is an individual SQL statement that always commits immediately without rollback capability.",
+      "A transaction is an uncommitted sequence of database reads that cannot acquire shared or exclusive locks.",
+      "A transaction is a database checkpoint process that logs memory buffers only upon server restart.",
     ],
   },
   {
@@ -546,9 +556,9 @@ const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
     prompt: "What is the primary purpose of database normalization?",
     preferredSentenceMatch: /\b(normalization|redundancy|anomalies)\b/i,
     distractors: [
-      "To duplicate records across relational tables to maximize query redundancy.",
-      "To combine all relational entities into a single universal table with repeating groups.",
-      "To eliminate the need for primary and foreign key constraints entirely.",
+      "To denormalize relations into a single table to eliminate all relational join operations.",
+      "To enforce strict B-tree indexing on every table attribute regardless of query workload.",
+      "To guarantee transactional ACID durability by writing log records directly to external replication nodes.",
     ],
   },
   {
@@ -556,9 +566,9 @@ const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
     prompt: "What is the role of a foreign key and referential integrity in a database?",
     preferredSentenceMatch: /\b(foreign\s+key|referential\s+integrity)\b/i,
     distractors: [
-      "A foreign key stores arbitrary unstructured binary data without constraint checking.",
-      "Referential integrity permits foreign key values to reference nonexistent parent records.",
-      "A foreign key automatically normalizes any unindexed table into Third Normal Form.",
+      "A foreign key creates physical copies of parent rows directly inside the child relation.",
+      "Referential integrity requires all child foreign keys to be composite candidate keys in the parent relation.",
+      "A foreign key automatically deletes all candidate keys in the parent relation whenever child records are updated.",
     ],
   },
   {
@@ -742,12 +752,15 @@ export function createQuestionForChunk(
   // Construct 4 choices with correct answer as choice A
   const choices = [quote, ...distractors.slice(0, 3)];
 
+  const qId = `q_up_${chunk.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
   // Quality guardrails:
   // 1. Must have exactly 4 choices
   // 2. All 4 choices must be distinct (no duplicates)
   // 3. No choice may contain ellipses ("..." or "…")
   // 4. No choice may start with "The opposite of" or be malformed
   // 5. Every choice must be at least 20 characters
+  // If reliable multiple-choice distractors cannot be formed, fall back cleanly to short_answer
   if (
     choices.length !== 4 ||
     new Set(choices).size !== 4 ||
@@ -759,10 +772,23 @@ export function createQuestionForChunk(
         c.trim().length < 20,
     )
   ) {
-    return null;
+    return {
+      id: qId,
+      conceptId,
+      kind: "short_answer",
+      prompt: `Based on your study notes for ${chunk.heading}, explain this key concept in your own words:`,
+      choices: [],
+      expected: {
+        kind: "short_answer",
+        correctAnswer: quote,
+        acceptableVariants: [quote],
+        explanation: `Key excerpt from your notes: "${quote}"`,
+      },
+      evidenceQuote: quote,
+      evidenceStart: verification.reference.start,
+      evidenceEnd: verification.reference.end ?? verification.reference.start + quote.length,
+    };
   }
-
-  const qId = `q_up_${chunk.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   return {
     id: qId,

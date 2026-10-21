@@ -98,7 +98,7 @@ export function QuizCard({
                         }`}
                       >
                         <span
-                          className={`font-mono font-bold px-2 py-0.5 rounded text-xs transition-colors ${
+                          className={`font-mono font-bold px-2 py-0.5 rounded text-xs transition-colors shrink-0 ${
                             isSelected
                               ? "bg-amber-400 text-stone-950 font-extrabold shadow-sm"
                               : "bg-stone-800 text-stone-300"
@@ -106,7 +106,9 @@ export function QuizCard({
                         >
                           {letter}
                         </span>
-                        <span className="flex-1 mt-0.5">{choice}</span>
+                        <span className="flex-1 mt-0.5 break-words">
+                          {choice.replace(/^[A-Da-d][.):-]\s+/, "")}
+                        </span>
                       </button>
                     );
                   })}
@@ -130,10 +132,16 @@ export function QuizCard({
                 </div>
               )}
 
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-[11px] text-stone-400">
-                  Grounded in verified note chunk{" "}
-                  <code className="text-amber-400 font-mono">[{question.evidence.chunkId}]</code>
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <span className="text-[11px] text-stone-400 truncate min-w-0">
+                  {question.evidence?.chunkId ? (
+                    <>
+                      Grounded in note chunk{" "}
+                      <code className="text-amber-400 font-mono">[{question.evidence.chunkId}]</code>
+                    </>
+                  ) : (
+                    "Grounded in verified study notes"
+                  )}
                 </span>
                 <button
                   type="submit"
@@ -141,7 +149,7 @@ export function QuizCard({
                     isLoading ||
                     (question.kind === "multiple_choice" ? !selectedAnswer : !typedAnswer.trim())
                   }
-                  className="rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-4 py-2 text-xs font-semibold text-stone-950 shadow-md shadow-amber-950/40 hover:opacity-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-4 py-2 text-xs font-semibold text-stone-950 shadow-md shadow-amber-950/40 hover:opacity-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0"
                 >
                   {isLoading ? "Grading..." : "Submit answer"}
                 </button>

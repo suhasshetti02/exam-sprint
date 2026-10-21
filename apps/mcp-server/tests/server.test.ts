@@ -37,6 +37,59 @@ describe("health endpoint", () => {
 });
 
 describe("MCP over Streamable HTTP", () => {
+  it("negotiates protocol version 2025-11-25 when explicitly requested by client", async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "alexa-client", version: "1.0.0" },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      result: {
+        protocolVersion: string;
+        serverInfo: { name: string; version: string };
+        capabilities: Record<string, unknown>;
+      };
+    };
+    expect(data.result.protocolVersion).toBe("2025-11-25");
+    expect(data.result.serverInfo.name).toBe("exam-sprint");
+  });
+
+  it("defaults to latest protocol version 2025-11-25 for forward compatibility", async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "initialize",
+        params: {
+          protocolVersion: "2026-01-01",
+          capabilities: {},
+          clientInfo: { name: "future-client", version: "1.0.0" },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { result: { protocolVersion: string } };
+    expect(data.result.protocolVersion).toBe("2025-11-25");
+  });
+
   it("initializes and discovers the five tool contracts", async () => {
     const client = await connect();
     const { tools } = await client.listTools();

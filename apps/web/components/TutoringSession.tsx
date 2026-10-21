@@ -20,6 +20,7 @@ import {
   type DocumentTopicSuggestion,
   type EvaluationData,
   type EvidenceData,
+  type ExecutionMetadata,
   type MasteryConcept,
   type QuestionData,
   type ServerStatus as Status,
@@ -91,12 +92,17 @@ export function TutoringSession() {
   const [showStatusChecklist, setShowStatusChecklist] = useState(false);
   const [suggestedTopics, setSuggestedTopics] = useState<DocumentTopicSuggestion[]>([]);
   const [currentProvider, setCurrentProvider] = useState<"llm" | "deterministic_fallback">("deterministic_fallback");
+  const [executionMetadata, setExecutionMetadata] = useState<ExecutionMetadata | undefined>();
   const [selectedOption, setSelectedOption] = useState<string | undefined>();
   const [progressionMode, setProgressionMode] = useState<ProgressionMode>("guided");
   const [autoAdvanceCountdown, setAutoAdvanceCountdown] = useState<number | null>(null);
 
   // Monotonic request counter ref to eliminate race conditions on overlapping or rapid topic switches
   const latestRequestIdRef = useRef(0);
+
+  // In-flight double-click protection and stable retry attempt ID tracking
+  const inFlightSubmissionRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
+  const lastAttemptRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
 
   // Auto-advance progression timer refs
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -309,6 +315,9 @@ export function TutoringSession() {
       if (res.provider) {
         setCurrentProvider(res.provider);
       }
+      if (res.executionMetadata) {
+        setExecutionMetadata(res.executionMetadata);
+      }
 
       setMasteryList(res.masteryList);
       if (res.toolTraces) {
@@ -382,6 +391,26 @@ export function TutoringSession() {
   const handleSubmitAnswer = async (answer: string) => {
     if (!currentQuestion) return;
     const activeQuestionId = currentQuestion.questionId;
+
+    // Concurrent double-click guard: ignore duplicate in-flight invocation
+    if (inFlightSubmissionRef.current) {
+      return;
+    }
+
+    // Reuse stable clientAttemptId for retries of the exact same answer attempt; otherwise generate a new one
+    let clientAttemptId: string;
+    if (
+      lastAttemptRef.current &&
+      lastAttemptRef.current.questionId === activeQuestionId &&
+      lastAttemptRef.current.answer === answer
+    ) {
+      clientAttemptId = lastAttemptRef.current.clientAttemptId;
+    } else {
+      clientAttemptId = `attempt_${activeQuestionId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      lastAttemptRef.current = { questionId: activeQuestionId, answer, clientAttemptId };
+    }
+
+    inFlightSubmissionRef.current = { questionId: activeQuestionId, answer, clientAttemptId };
     const requestId = ++latestRequestIdRef.current;
 
     setIsLoading(true);
@@ -395,11 +424,17 @@ export function TutoringSession() {
     setMessages(newMessages);
 
     try {
-      const res = await submitAnswer(activeQuestionId, answer);
+      const res = await submitAnswer(activeQuestionId, answer, {
+        clientAttemptId,
+        documentId: activeDocumentId,
+      });
 
       if (requestId !== latestRequestIdRef.current) {
         return;
       }
+
+      // Successful completion clears retry attempt state
+      lastAttemptRef.current = null;
 
       let q: QuestionData | undefined = currentQuestion;
       let ev: EvidenceData | undefined = currentEvidence;
@@ -421,6 +456,9 @@ export function TutoringSession() {
       }
       if (res.provider) {
         setCurrentProvider(res.provider);
+      }
+      if (res.executionMetadata) {
+        setExecutionMetadata(res.executionMetadata);
       }
 
       setMasteryList(res.masteryList);
@@ -487,6 +525,7 @@ export function TutoringSession() {
         },
       ]);
     } finally {
+      inFlightSubmissionRef.current = null;
       if (requestId === latestRequestIdRef.current) {
         setIsLoading(false);
       }
@@ -906,8 +945,11 @@ export function TutoringSession() {
   );
 
   const isAiLive =
-    currentProvider === "llm" && Boolean(serverStatus?.reachable && serverStatus.provider?.configured);
-  const modelName = serverStatus?.reachable ? serverStatus.provider?.model || "Gemini" : "Gemini";
+    executionMetadata?.executionPath === "live_model" ||
+    (currentProvider === "llm" && Boolean(serverStatus?.reachable && serverStatus.provider?.configured && !executionMetadata));
+  const modelName =
+    executionMetadata?.model ||
+    (serverStatus?.reachable ? serverStatus.provider?.model || "gemini-3.8-flash" : "gemini-3.8-flash");
 
   return (
     <div className="flex flex-col h-full gap-3 overflow-hidden">
@@ -965,7 +1007,14 @@ export function TutoringSession() {
           )}
 
           {/* Active Response Engine Badge */}
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/80 border border-stone-800 text-xs text-stone-300">
+          <div
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/80 border border-stone-800 text-xs text-stone-300"
+            title={
+              isAiLive
+                ? `Active Model: ${modelName} (${executionMetadata?.callCount ?? 1} tool calls)`
+                : `Engine: Deterministic Fallback (${executionMetadata?.fallbackReason || "Offline/local mode"})`
+            }
+          >
             <span className={`size-2 rounded-full ${isAiLive ? "bg-amber-400 animate-ping" : "bg-stone-500"}`} />
             <Activity className="size-3 text-amber-400" />
             <span className="font-medium text-[11px]">

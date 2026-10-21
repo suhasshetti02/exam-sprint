@@ -43,6 +43,13 @@ export interface SessionResponse {
   masteryList: GetMasteryOutput["concepts"];
   toolTraces: ToolTraceEntry[];
   provider?: "llm" | "deterministic_fallback";
+  executionMetadata?: {
+    executionPath: "live_model" | "deterministic_fallback" | "mixed";
+    provider?: string;
+    model?: string;
+    fallbackReason?: string;
+    callCount?: number;
+  };
 }
 
 export { isWeakConceptsRequest, TOPIC_CONCEPT_MAP } from "../topic-utils";
@@ -163,12 +170,38 @@ export async function startTutoringSession(options: {
                   }));
                   const tailoredQ = createQuestionForChunk(firstChunkChunk, conceptId, undefined, allDocChunks);
                   if (tailoredQ) {
+                    const nowIso = new Date().toISOString();
+                    db.prepare(
+                      "INSERT OR IGNORE INTO concepts (id, title, document_id) VALUES (?, ?, ?)",
+                    ).run(
+                      tailoredQ.conceptId,
+                      `${doc.title || doc.id}: ${firstChunk.heading}`,
+                      doc.id,
+                    );
+                    db.prepare(
+                      `INSERT OR REPLACE INTO questions (
+                        id, concept_id, kind, prompt, choices_json, expected_json,
+                        evidence_chunk_id, evidence_quote, evidence_start, evidence_end, verified_at
+                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    ).run(
+                      tailoredQ.id,
+                      tailoredQ.conceptId,
+                      tailoredQ.kind,
+                      tailoredQ.prompt,
+                      tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
+                      JSON.stringify(tailoredQ.expected),
+                      firstChunk.id,
+                      tailoredQ.evidenceQuote,
+                      tailoredQ.evidenceStart,
+                      tailoredQ.evidenceEnd,
+                      nowIso,
+                    );
                     chosen = {
                       id: tailoredQ.id,
                       conceptId: tailoredQ.conceptId,
                       kind: tailoredQ.kind,
                       prompt: tailoredQ.prompt,
-                      choices_json: JSON.stringify(tailoredQ.choices),
+                      choices_json: tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
                       evidence_chunk_id: firstChunk.id,
                       evidence_quote: tailoredQ.evidenceQuote,
                       evidence_start: tailoredQ.evidenceStart,
@@ -269,6 +302,13 @@ export async function startTutoringSession(options: {
                   if (tailoredQ) {
                     const nowIso = new Date().toISOString();
                     db.prepare(
+                      "INSERT OR IGNORE INTO concepts (id, title, document_id) VALUES (?, ?, ?)",
+                    ).run(
+                      tailoredQ.conceptId,
+                      `${doc.title || doc.id}: ${chunk.heading}`,
+                      doc.id,
+                    );
+                    db.prepare(
                       `INSERT OR REPLACE INTO questions (
                         id, concept_id, kind, prompt, choices_json, expected_json,
                         evidence_chunk_id, evidence_quote, evidence_start, evidence_end, verified_at
@@ -278,7 +318,7 @@ export async function startTutoringSession(options: {
                       tailoredQ.conceptId,
                       tailoredQ.kind,
                       tailoredQ.prompt,
-                      JSON.stringify(tailoredQ.choices),
+                      tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
                       JSON.stringify(tailoredQ.expected),
                       chunk.id,
                       tailoredQ.evidenceQuote,
@@ -291,7 +331,7 @@ export async function startTutoringSession(options: {
                       conceptId: tailoredQ.conceptId,
                       kind: tailoredQ.kind,
                       prompt: tailoredQ.prompt,
-                      choices_json: JSON.stringify(tailoredQ.choices),
+                      choices_json: tailoredQ.choices ? JSON.stringify(tailoredQ.choices) : null,
                       evidence_chunk_id: chunk.id,
                       evidence_quote: tailoredQ.evidenceQuote,
                       evidence_start: tailoredQ.evidenceStart,
@@ -566,6 +606,8 @@ export async function submitStudentAnswer(options: {
   questionId: string;
   answer: string;
   recoveryForMisconceptionLabel?: string;
+  clientAttemptId?: string;
+  documentId?: string;
 }): Promise<SessionResponse> {
   const toolTraces: ToolTraceEntry[] = [];
 
@@ -595,6 +637,7 @@ export async function submitStudentAnswer(options: {
         verdict: "correct" | "partially_correct" | "incorrect";
         misconceptionLabel?: string;
         recoveryForMisconceptionLabel?: string;
+        clientAttemptId?: string;
       },
       RecordProgressOutput
     >("record_progress", {
@@ -603,6 +646,7 @@ export async function submitStudentAnswer(options: {
       verdict: evaluation.verdict,
       misconceptionLabel: evaluation.misconceptionLabel,
       recoveryForMisconceptionLabel: options.recoveryForMisconceptionLabel,
+      clientAttemptId: options.clientAttemptId,
     });
     progressResult = progressRes.result;
     toolTraces.push(progressRes.trace);
@@ -617,9 +661,9 @@ export async function submitStudentAnswer(options: {
   let masteryList: GetMasteryOutput["concepts"] = [];
   try {
     const masteryRes = await executeMcpTool<
-      Record<string, never>,
+      { documentId?: string },
       GetMasteryOutput
-    >("get_mastery", {});
+    >("get_mastery", { documentId: options.documentId });
     masteryList = masteryRes.result.concepts;
     toolTraces.push(masteryRes.trace);
   } catch (err: unknown) {
@@ -726,16 +770,16 @@ export async function submitStudentAnswer(options: {
 /**
  * Loads the current persisted mastery state for the learner.
  */
-export async function loadInitialMasteryState(): Promise<{
+export async function loadInitialMasteryState(documentId?: string): Promise<{
   masteryList: GetMasteryOutput["concepts"];
   toolTraces: ToolTraceEntry[];
 }> {
   const toolTraces: ToolTraceEntry[] = [];
   try {
     const masteryRes = await executeMcpTool<
-      Record<string, never>,
+      { documentId?: string },
       GetMasteryOutput
-    >("get_mastery", {});
+    >("get_mastery", { documentId });
     toolTraces.push(masteryRes.trace);
     return { masteryList: masteryRes.result.concepts, toolTraces };
   } catch (err: unknown) {

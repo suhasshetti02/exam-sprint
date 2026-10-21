@@ -78,6 +78,14 @@ export interface MasteryConcept {
   nextReviewAt?: string;
 }
 
+export interface ExecutionMetadata {
+  executionPath: "live_model" | "deterministic_fallback" | "mixed";
+  provider?: string;
+  model?: string;
+  fallbackReason?: string;
+  callCount?: number;
+}
+
 export interface SessionResponse {
   message: string;
   question?: QuestionData;
@@ -86,6 +94,7 @@ export interface SessionResponse {
   masteryList: MasteryConcept[];
   toolTraces: ToolTraceEntry[];
   provider?: "llm" | "deterministic_fallback";
+  executionMetadata?: ExecutionMetadata;
 }
 
 /** Ask the web backend (which talks to the MCP server) what the MCP server reports. */
@@ -138,12 +147,30 @@ export async function startSession(
 export async function submitAnswer(
   questionId: string,
   answer: string,
-  signal?: AbortSignal,
+  optionsOrSignal?:
+    | {
+        recoveryForMisconceptionLabel?: string;
+        clientAttemptId?: string;
+        documentId?: string;
+      }
+    | AbortSignal,
+  maybeSignal?: AbortSignal,
 ): Promise<SessionResponse> {
+  const isSignal = optionsOrSignal instanceof AbortSignal;
+  const options = isSignal ? undefined : optionsOrSignal;
+  const signal = isSignal ? optionsOrSignal : maybeSignal;
+
   const res = await fetch(publicConfig.sessionEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "submit_answer", questionId, answer }),
+    body: JSON.stringify({
+      action: "submit_answer",
+      questionId,
+      answer,
+      recoveryForMisconceptionLabel: options?.recoveryForMisconceptionLabel,
+      clientAttemptId: options?.clientAttemptId,
+      documentId: options?.documentId,
+    }),
     signal,
   });
 

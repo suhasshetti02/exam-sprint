@@ -18,15 +18,21 @@ const sessionRequestSchema = z.discriminatedUnion("action", [
     questionId: z.string().min(1).max(80),
     answer: z.string().trim().min(1).max(2000),
     recoveryForMisconceptionLabel: z.string().min(1).max(200).optional(),
+    clientAttemptId: z.string().min(1).max(120).optional(),
+    documentId: z.string().min(1).max(100).optional(),
   }),
   z.object({
     action: z.literal("get_state"),
+    documentId: z.string().min(1).max(100).optional(),
   }),
 ]);
 
-export async function GET() {
+export async function GET(req?: Request) {
   try {
-    const state = await loadInitialMasteryState();
+    const documentId = req?.url
+      ? new URL(req.url).searchParams.get("documentId") || undefined
+      : undefined;
+    const state = await loadInitialMasteryState(documentId);
     return NextResponse.json(state);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Failed to load state";
@@ -77,12 +83,14 @@ export async function POST(req: Request) {
         questionId: data.questionId,
         answer: data.answer,
         recoveryForMisconceptionLabel: data.recoveryForMisconceptionLabel,
+        clientAttemptId: data.clientAttemptId,
+        documentId: data.documentId,
       });
       return NextResponse.json(response);
     }
 
     if (data.action === "get_state") {
-      const state = await loadInitialMasteryState();
+      const state = await loadInitialMasteryState(data.documentId);
       return NextResponse.json(state);
     }
 

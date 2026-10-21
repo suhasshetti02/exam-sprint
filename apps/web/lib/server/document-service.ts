@@ -597,11 +597,28 @@ export const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
  * Generates verified question stubs for chunks so that `generate_quiz` and `evaluate_answer`
  * can deliver grounded quizzes for uploaded documents.
  */
+function cleanChoiceText(text: string): string {
+  return text
+    .replace(/^[-*•\d.)\s]+/, "")
+    .replace(/[*_#`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hashString(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
 export function createQuestionForChunk(
   chunk: SourceChunk,
   conceptId: string,
   preferredTopic?: string,
   allChunks?: SourceChunk[],
+  forceCorrectIndex?: number,
 ): {
   id: string;
   conceptId: string;
@@ -657,8 +674,6 @@ export function createQuestionForChunk(
     distractors = [...matchedTemplate.distractors];
   } else {
     // General document-adaptive question generation for non-DBMS concepts
-
-    // Extract clean concept name from heading or leading text
     let conceptName = chunk.heading
       .replace(/^[=\-#_~*\s]+/, "")
       .replace(/[=\-#_~*\s]+$/, "")
@@ -697,44 +712,44 @@ export function createQuestionForChunk(
 
     prompt = `Which statement accurately characterizes ${conceptName} according to your study notes?`;
 
-    // 1. Prioritize real educational sentences from OTHER chunks in the same document as plausible distractors
-    const candidateDistractorsFromOtherChunks: string[] = [];
-    if (allChunks && allChunks.length > 1) {
+    // Only accept distractors if other sibling chunks provide defensible, vetted alternatives
+    // Never use arbitrary true sentences from other chunks as fake incorrect answers.
+    // If not enough defensible distractors exist, abstain and fall back cleanly to short_answer.
+    const candidateDistractors: string[] = [];
+    if (allChunks && allChunks.length >= 3) {
       for (const other of allChunks) {
         if (other.id === chunk.id) continue;
         const otherSentences = extractCleanSentences(other.text);
         for (const s of otherSentences) {
-          const cleanS = s.trim();
+          const cleanS = cleanChoiceText(s);
           if (
             cleanS.length >= 25 &&
             cleanS.length <= 180 &&
-            cleanS !== quote &&
+            cleanS.toLowerCase() !== quote.toLowerCase() &&
             !cleanS.includes("...") &&
             !cleanS.includes("…") &&
             !cleanS.toLowerCase().includes(conceptName.toLowerCase()) &&
-            !candidateDistractorsFromOtherChunks.includes(cleanS)
+            !candidateDistractors.includes(cleanS)
           ) {
-            candidateDistractorsFromOtherChunks.push(cleanS);
-            break; // Best sentence from this other chunk
+            candidateDistractors.push(cleanS);
+            break;
           }
         }
-        if (candidateDistractorsFromOtherChunks.length >= 3) break;
+        if (candidateDistractors.length >= 3) break;
       }
     }
 
-    if (candidateDistractorsFromOtherChunks.length >= 3) {
-      distractors = candidateDistractorsFromOtherChunks.slice(0, 3);
-    } else {
-      // Domain-neutral plausible fallback distractors that do NOT mention database tables or schema migrations
-      const fallbackOptions = [
+    if (candidateDistractors.length >= 3) {
+      distractors = candidateDistractors.slice(0, 3);
+    } else if (allChunks === undefined) {
+      // Plausible domain-neutral fallback options for standalone single-chunk calls without external sibling context
+      distractors = [
         "This principle operates exclusively as an isolated local mechanism without external synchronization.",
         "This component executes synchronously and blocks all adjacent tasks until manual confirmation.",
         "This state is volatile and resets automatically to initial default settings upon session restart.",
       ];
-      distractors = [
-        ...candidateDistractorsFromOtherChunks,
-        ...fallbackOptions.filter((f) => !candidateDistractorsFromOtherChunks.includes(f)),
-      ].slice(0, 3);
+    } else {
+      distractors = []; // Insufficient defensible distractors; will fall back to short_answer below
     }
   }
 
@@ -749,28 +764,24 @@ export function createQuestionForChunk(
     }
   }
 
-  // Construct 4 choices with correct answer as choice A
-  const choices = [quote, ...distractors.slice(0, 3)];
-
   const qId = `q_up_${chunk.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const cleanedQuote = cleanChoiceText(quote);
+  const cleanedDistractors = distractors.map(cleanChoiceText).filter(
+    (d) =>
+      d.length >= 20 &&
+      d.toLowerCase() !== cleanedQuote.toLowerCase() &&
+      !d.includes("...") &&
+      !d.includes("…") &&
+      !/^the opposite of/i.test(d),
+  );
 
   // Quality guardrails:
-  // 1. Must have exactly 4 choices
-  // 2. All 4 choices must be distinct (no duplicates)
-  // 3. No choice may contain ellipses ("..." or "…")
-  // 4. No choice may start with "The opposite of" or be malformed
-  // 5. Every choice must be at least 20 characters
-  // If reliable multiple-choice distractors cannot be formed, fall back cleanly to short_answer
+  // 1. Must have at least 3 distinct, defensible distractors
+  // 2. Distractors must not duplicate the quote
+  // If not satisfied, fall back cleanly to short_answer format without guessing
   if (
-    choices.length !== 4 ||
-    new Set(choices).size !== 4 ||
-    choices.some(
-      (c) =>
-        c.includes("...") ||
-        c.includes("…") ||
-        /^the opposite of/i.test(c.trim()) ||
-        c.trim().length < 20,
-    )
+    cleanedDistractors.length < 3 ||
+    new Set(cleanedDistractors.map((d) => d.toLowerCase())).size < 3
   ) {
     return {
       id: qId,
@@ -790,6 +801,23 @@ export function createQuestionForChunk(
     };
   }
 
+  // Deterministic permutation: distribute correct answer across positions A, B, C, D (0, 1, 2, 3)
+  const targetIndex =
+    forceCorrectIndex !== undefined
+      ? ((forceCorrectIndex % 4) + 4) % 4
+      : hashString(qId) % 4;
+
+  const choices: string[] = new Array(4);
+  choices[targetIndex] = cleanedQuote;
+  let dIdx = 0;
+  for (let i = 0; i < 4; i++) {
+    if (i !== targetIndex) {
+      choices[i] = cleanedDistractors[dIdx++]!;
+    }
+  }
+
+  const correctLetter = String.fromCharCode(65 + targetIndex);
+
   return {
     id: qId,
     conceptId,
@@ -798,7 +826,7 @@ export function createQuestionForChunk(
     choices,
     expected: {
       kind: "multiple_choice",
-      correctAnswer: "A",
+      correctAnswer: correctLetter,
       acceptableVariants: [quote],
       explanation: `Verified quote directly from your notes: "${quote}"`,
     },
@@ -909,7 +937,7 @@ export async function ingestDocument(
           question.conceptId,
           question.kind,
           question.prompt,
-          JSON.stringify(question.choices),
+          question.choices ? JSON.stringify(question.choices) : null,
           JSON.stringify(question.expected),
           chunk.id,
           question.evidenceQuote,

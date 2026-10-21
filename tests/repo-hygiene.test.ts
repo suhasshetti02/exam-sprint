@@ -16,9 +16,12 @@ function* walk(dir: string): Generator<string> {
 }
 
 describe("repository hygiene", () => {
-  it("ships .env.example but no real .env file", () => {
+  it("ships .env.example but no real .env or local environment files", () => {
     expect(existsSync(join(root, ".env.example"))).toBe(true);
     expect(existsSync(join(root, ".env"))).toBe(false);
+    expect(existsSync(join(root, ".env.local"))).toBe(false);
+    expect(existsSync(join(root, ".env.production"))).toBe(false);
+    expect(existsSync(join(root, ".env.development"))).toBe(false);
   });
 
   it("has only placeholder values in .env.example", () => {

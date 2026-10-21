@@ -99,11 +99,17 @@ A relation is in Second Normal Form when it is in First Normal Form and every no
     });
     const question = sessionRes.question!;
 
-    // Select deliberate wrong answer
-    const evalRes = await submitStudentAnswer({
+    // Select deliberate wrong answer without hardcoded answer position assumptions
+    let evalRes = await submitStudentAnswer({
       questionId: question.questionId,
-      answer: "D",
+      answer: "A",
     });
+    if (evalRes.evaluation?.verdict === "correct") {
+      evalRes = await submitStudentAnswer({
+        questionId: question.questionId,
+        answer: "B",
+      });
+    }
     expect(evalRes.evaluation).toBeDefined();
     expect(evalRes.evaluation?.verdict).toBe("incorrect");
 

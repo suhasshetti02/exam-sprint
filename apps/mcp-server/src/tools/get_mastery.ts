@@ -24,6 +24,7 @@ export const getMasteryTool: ToolDefinition<typeof getMasteryInput> = {
       const masteryRecords = await progressStore.getMastery(
         DEFAULT_STUDENT_ID,
         input.conceptIds,
+        input.documentId,
       );
 
       const concepts = masteryRecords.map((m) => {

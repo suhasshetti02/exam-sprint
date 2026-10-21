@@ -20,6 +20,7 @@ export interface OrchestratorInput {
   questionId?: string;
   answer?: string;
   recoveryForMisconceptionLabel?: string;
+  clientAttemptId?: string;
   customProvider?: LlmProvider; // For testing and mocking
   signal?: AbortSignal;
 }
@@ -45,6 +46,12 @@ export async function runTutoringOrchestration(
     return {
       ...res,
       provider: "deterministic_fallback",
+      executionMetadata: {
+        executionPath: "deterministic_fallback",
+        provider: "deterministic_policy",
+        fallbackReason: "Document-grounded initial session",
+        callCount: res.toolTraces?.length ?? 0,
+      },
     };
   }
 
@@ -110,6 +117,12 @@ export async function runTutoringOrchestration(
               masteryList: state.masteryList,
               toolTraces: [],
               provider: "deterministic_fallback",
+              executionMetadata: {
+                executionPath: "deterministic_fallback",
+                provider: "deterministic_policy",
+                fallbackReason: "Unresolved syllabus topic",
+                callCount: 0,
+              },
             };
           }
 
@@ -164,6 +177,12 @@ export async function runTutoringOrchestration(
           masteryList: agentResult.masteryList,
           toolTraces: traces,
           provider: "llm",
+          executionMetadata: {
+            executionPath: "live_model",
+            provider: provider.id,
+            model: provider.model,
+            callCount: traces.length,
+          },
         };
       }
 
@@ -175,6 +194,8 @@ export async function runTutoringOrchestration(
         action: "submit_answer",
         questionId: input.questionId,
         recoveryForMisconceptionLabel: input.recoveryForMisconceptionLabel,
+        clientAttemptId: input.clientAttemptId,
+        documentId: input.documentId,
         signal: input.signal,
       });
 
@@ -186,12 +207,22 @@ export async function runTutoringOrchestration(
         masteryList: agentResult.masteryList,
         toolTraces: agentResult.toolTraces,
         provider: "llm",
+        executionMetadata: {
+          executionPath: "live_model",
+          provider: provider.id,
+          model: provider.model,
+          callCount: agentResult.toolTraces.length,
+        },
       };
     } catch (err: unknown) {
       console.warn("LLM agent loop encountered error; engaging deterministic fallback:", err);
-      // Fall through to deterministic policy below
+      // Fall through to deterministic policy below with safe fallback reason
     }
   }
+
+  const fallbackReason = !provider
+    ? "No live AI provider configured"
+    : "Provider runtime error or timeout";
 
   // Deterministic Fallback Policy
   if (input.action === "start_session") {
@@ -204,6 +235,12 @@ export async function runTutoringOrchestration(
     return {
       ...fallbackRes,
       provider: "deterministic_fallback",
+      executionMetadata: {
+        executionPath: "deterministic_fallback",
+        provider: "deterministic_policy",
+        fallbackReason,
+        callCount: fallbackRes.toolTraces?.length ?? 0,
+      },
     };
   }
 
@@ -212,10 +249,18 @@ export async function runTutoringOrchestration(
       questionId: input.questionId,
       answer: input.answer,
       recoveryForMisconceptionLabel: input.recoveryForMisconceptionLabel,
+      clientAttemptId: input.clientAttemptId,
+      documentId: input.documentId,
     });
     return {
       ...fallbackRes,
       provider: "deterministic_fallback",
+      executionMetadata: {
+        executionPath: "deterministic_fallback",
+        provider: "deterministic_policy",
+        fallbackReason,
+        callCount: fallbackRes.toolTraces?.length ?? 0,
+      },
     };
   }
 

@@ -9,6 +9,7 @@ import {
   createQuestionForChunk,
   deleteDocument,
   ingestDocument,
+  openDb,
 } from "../lib/server/document-service";
 import {
   startTutoringSession,
@@ -145,7 +146,7 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
     expect(q.conceptId).toBe("concept-2nf");
     expect(q.kind).toBe("multiple_choice");
     expect(q.expected.kind).toBe("multiple_choice");
-    expect(q.expected.correctAnswer).toBe("A");
+    expect(["A", "B", "C", "D"]).toContain(q.expected.correctAnswer);
     expect(q.expected.acceptableVariants).toBeDefined();
     expect(q.expected.explanation).toContain(q.evidenceQuote);
 
@@ -193,23 +194,25 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
       verifiedAt: new Date().toISOString(),
     };
 
-    // Choice "A" must evaluate to correct
-    const evalA = evaluator.evaluate(questionRecord, "A");
-    expect(evalA.verdict).toBe("correct");
+    const correctLetter = q.expected.correctAnswer;
+    const correctIndex = correctLetter.charCodeAt(0) - 65;
 
-    // Choice by full text of option A must evaluate to correct (acceptableVariant)
-    const evalAText = evaluator.evaluate(questionRecord, q.choices[0]!);
-    expect(evalAText.verdict).toBe("correct");
+    // Evaluates displayed correct answer letter deterministically
+    const evalCorrect = evaluator.evaluate(questionRecord, correctLetter);
+    expect(evalCorrect.verdict).toBe("correct");
 
-    // Choices "B", "C", "D" must evaluate to incorrect
-    const evalB = evaluator.evaluate(questionRecord, "B");
-    expect(evalB.verdict).toBe("incorrect");
+    // Choice by full text of the correct option must evaluate to correct (acceptableVariant)
+    const evalCorrectText = evaluator.evaluate(questionRecord, q.choices[correctIndex]!);
+    expect(evalCorrectText.verdict).toBe("correct");
 
-    const evalC = evaluator.evaluate(questionRecord, "C");
-    expect(evalC.verdict).toBe("incorrect");
-
-    const evalD = evaluator.evaluate(questionRecord, "D");
-    expect(evalD.verdict).toBe("incorrect");
+    // All other options must evaluate to incorrect
+    const options = ["A", "B", "C", "D"];
+    for (const opt of options) {
+      if (opt !== correctLetter) {
+        const evalDistractor = evaluator.evaluate(questionRecord, opt);
+        expect(evalDistractor.verdict).toBe("incorrect");
+      }
+    }
   });
 
   it("5. Abstains cleanly when chunk content cannot satisfy question quality requirements", () => {
@@ -249,18 +252,24 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
       expect(choice).not.toContain("…");
     }
 
-    // Submit answer A -> correct
-    const evalResA = await submitStudentAnswer({
-      questionId: q.questionId,
-      answer: "A",
-    });
-    expect(evalResA.evaluation?.verdict).toBe("correct");
+    const db = openDb();
+    const qRow = db.prepare("SELECT expected_json FROM questions WHERE id = ?").get(q.questionId) as { expected_json: string };
+    db.close();
+    const correctLetter = JSON.parse(qRow.expected_json).correctAnswer;
+    const incorrectLetter = ["A", "B", "C", "D"].find((l) => l !== correctLetter)!;
 
-    // Submit answer B -> incorrect
-    const evalResB = await submitStudentAnswer({
+    // Submit correct answer -> correct
+    const evalResCorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: "B",
+      answer: correctLetter,
     });
-    expect(evalResB.evaluation?.verdict).toBe("incorrect");
+    expect(evalResCorrect.evaluation?.verdict).toBe("correct");
+
+    // Submit incorrect answer -> incorrect
+    const evalResIncorrect = await submitStudentAnswer({
+      questionId: q.questionId,
+      answer: incorrectLetter,
+    });
+    expect(evalResIncorrect.evaluation?.verdict).toBe("incorrect");
   });
 });

@@ -47,15 +47,23 @@ export class SqliteProgressStore implements ProgressStore {
   public async getMastery(
     studentId: string,
     conceptIds?: string[],
+    documentId?: string,
   ): Promise<ConceptMastery[]> {
     this.ensureStudent(studentId);
 
-    // If specific conceptIds were passed, query those; otherwise query all concepts from the catalogue
+    // If specific conceptIds were passed, query those; otherwise query concepts from the catalogue
     let targetConceptIds = conceptIds;
     if (!targetConceptIds || targetConceptIds.length === 0) {
-      const allConcepts = this.db
-        .prepare("SELECT id FROM concepts ORDER BY id")
-        .all() as unknown as Array<{ id: string }>;
+      let allConcepts: Array<{ id: string }>;
+      if (documentId) {
+        allConcepts = this.db
+          .prepare("SELECT id FROM concepts WHERE document_id = ? ORDER BY id")
+          .all(documentId) as unknown as Array<{ id: string }>;
+      } else {
+        allConcepts = this.db
+          .prepare("SELECT id FROM concepts ORDER BY id")
+          .all() as unknown as Array<{ id: string }>;
+      }
       targetConceptIds = allConcepts.map((c) => c.id);
     }
 
@@ -130,6 +138,7 @@ export class SqliteProgressStore implements ProgressStore {
     verdict: Verdict;
     misconceptionLabel?: string;
     recoveryForMisconceptionLabel?: string;
+    clientAttemptId?: string;
   }): Promise<ProgressUpdate> {
     this.ensureStudent(input.studentId);
 
@@ -138,61 +147,97 @@ export class SqliteProgressStore implements ProgressStore {
       throw new ToolError("not_found", `Question not found: ${input.questionId}`);
     }
 
+    // Server-enforced idempotency: if clientAttemptId is provided and already recorded, return existing state
+    if (input.clientAttemptId) {
+      const existing = this.db
+        .prepare(
+          "SELECT id, verdict, created_at FROM attempts WHERE student_id = ? AND client_attempt_id = ?",
+        )
+        .get(input.studentId, input.clientAttemptId) as unknown as
+        | { id: string; verdict: Verdict; created_at: string }
+        | undefined;
+
+      if (existing) {
+        const currentMasteryRow = this.db
+          .prepare(
+            "SELECT student_id, concept_id, mastery, attempts_count, last_attempt_at, next_review_at FROM concept_mastery WHERE student_id = ? AND concept_id = ?",
+          )
+          .get(input.studentId, question.conceptId) as unknown as MasteryRow | undefined;
+
+        return {
+          attemptId: existing.id,
+          mastery: {
+            studentId: input.studentId,
+            conceptId: question.conceptId,
+            mastery: currentMasteryRow ? currentMasteryRow.mastery : 0,
+            attemptsCount: currentMasteryRow ? currentMasteryRow.attempts_count : 1,
+            lastAttemptAt: currentMasteryRow?.last_attempt_at ?? existing.created_at,
+            nextReviewAt: currentMasteryRow?.next_review_at ?? undefined,
+          },
+          retestScheduled: false,
+          misconceptionResolved: false,
+        };
+      }
+    }
+
     const now = new Date().toISOString();
     const attemptId = `att_${randomUUID()}`;
 
-    // 1. Insert attempt record
-    this.db
-      .prepare(
-        `INSERT INTO attempts (
-          id, student_id, question_id, answer_text, verdict,
-          evidence_chunk_id, evidence_quote, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        attemptId,
-        input.studentId,
-        input.questionId,
-        input.answer,
-        input.verdict,
-        question.evidenceChunkId,
-        question.evidenceQuote,
-        now,
-      );
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      // 1. Insert attempt record with optional client_attempt_id
+      this.db
+        .prepare(
+          `INSERT INTO attempts (
+            id, student_id, question_id, answer_text, verdict,
+            evidence_chunk_id, evidence_quote, created_at, client_attempt_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          attemptId,
+          input.studentId,
+          input.questionId,
+          input.answer,
+          input.verdict,
+          question.evidenceChunkId,
+          question.evidenceQuote,
+          now,
+          input.clientAttemptId ?? null,
+        );
 
-    // 2. Read existing concept mastery
-    const currentMasteryRow = this.db
-      .prepare(
-        "SELECT student_id, concept_id, mastery, attempts_count FROM concept_mastery WHERE student_id = ? AND concept_id = ?",
-      )
-      .get(input.studentId, question.conceptId) as unknown as MasteryRow | undefined;
+      // 2. Read existing concept mastery
+      const currentMasteryRow = this.db
+        .prepare(
+          "SELECT student_id, concept_id, mastery, attempts_count FROM concept_mastery WHERE student_id = ? AND concept_id = ?",
+        )
+        .get(input.studentId, question.conceptId) as unknown as MasteryRow | undefined;
 
-    const currentMastery = currentMasteryRow ? currentMasteryRow.mastery : 0;
-    const currentAttempts = currentMasteryRow ? currentMasteryRow.attempts_count : 0;
+      const currentMastery = currentMasteryRow ? currentMasteryRow.mastery : 0;
+      const currentAttempts = currentMasteryRow ? currentMasteryRow.attempts_count : 0;
 
-    const newMastery = calculateMastery(currentMastery, input.verdict);
-    const nextReviewAt = calculateNextReview(newMastery);
+      const newMastery = calculateMastery(currentMastery, input.verdict);
+      const nextReviewAt = calculateNextReview(newMastery);
 
-    // 3. Upsert concept mastery
-    this.db
-      .prepare(
-        `INSERT INTO concept_mastery (
-          student_id, concept_id, mastery, attempts_count, last_attempt_at, next_review_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(student_id, concept_id) DO UPDATE SET
-          mastery = excluded.mastery,
-          attempts_count = excluded.attempts_count,
-          last_attempt_at = excluded.last_attempt_at,
-          next_review_at = excluded.next_review_at`,
-      )
-      .run(
-        input.studentId,
-        question.conceptId,
-        newMastery,
-        currentAttempts + 1,
-        now,
-        nextReviewAt,
-      );
+      // 3. Upsert concept mastery
+      this.db
+        .prepare(
+          `INSERT INTO concept_mastery (
+            student_id, concept_id, mastery, attempts_count, last_attempt_at, next_review_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(student_id, concept_id) DO UPDATE SET
+            mastery = excluded.mastery,
+            attempts_count = excluded.attempts_count,
+            last_attempt_at = excluded.last_attempt_at,
+            next_review_at = excluded.next_review_at`,
+        )
+        .run(
+          input.studentId,
+          question.conceptId,
+          newMastery,
+          currentAttempts + 1,
+          now,
+          nextReviewAt,
+        );
 
     // 4. Handle misconceptions and retest scheduling
     let retestScheduled = false;
@@ -309,10 +354,9 @@ export class SqliteProgressStore implements ProgressStore {
         resolvedMisconceptionLabel = misc.label;
         recoveryStatus = "resolved";
       }
-    } else if (input.verdict === "incorrect" && input.recoveryForMisconceptionLabel) {
-      // Failed a targeted recovery attempt: retain in_recovery / open status
-      recoveryStatus = "in_recovery";
     }
+
+    this.db.exec("COMMIT");
 
     return {
       attemptId,
@@ -330,5 +374,51 @@ export class SqliteProgressStore implements ProgressStore {
       resolvedMisconceptionLabel,
       recoveryStatus,
     };
+  } catch (err: unknown) {
+    try {
+      this.db.exec("ROLLBACK");
+    } catch {
+      // ignore rollback error if transaction already terminated
+    }
+
+    if (
+      input.clientAttemptId &&
+      err instanceof Error &&
+      err.message.includes("UNIQUE constraint failed")
+    ) {
+      // Concurrently recorded identical submission
+      const existing = this.db
+        .prepare(
+          "SELECT id, verdict, created_at FROM attempts WHERE student_id = ? AND client_attempt_id = ?",
+        )
+        .get(input.studentId, input.clientAttemptId) as unknown as
+        | { id: string; verdict: Verdict; created_at: string }
+        | undefined;
+
+      if (existing) {
+        const currentMasteryRow = this.db
+          .prepare(
+            "SELECT student_id, concept_id, mastery, attempts_count, last_attempt_at, next_review_at FROM concept_mastery WHERE student_id = ? AND concept_id = ?",
+          )
+          .get(input.studentId, question.conceptId) as unknown as MasteryRow | undefined;
+
+        return {
+          attemptId: existing.id,
+          mastery: {
+            studentId: input.studentId,
+            conceptId: question.conceptId,
+            mastery: currentMasteryRow ? currentMasteryRow.mastery : 0,
+            attemptsCount: currentMasteryRow ? currentMasteryRow.attempts_count : 1,
+            lastAttemptAt: currentMasteryRow?.last_attempt_at ?? existing.created_at,
+            nextReviewAt: currentMasteryRow?.next_review_at ?? undefined,
+          },
+          retestScheduled: false,
+          misconceptionResolved: false,
+        };
+      }
+    }
+
+    throw err;
   }
+}
 }

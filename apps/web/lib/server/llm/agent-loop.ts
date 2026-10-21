@@ -38,6 +38,8 @@ export interface RunAgentTurnInput {
   action: "start_session" | "submit_answer";
   questionId?: string;
   recoveryForMisconceptionLabel?: string;
+  clientAttemptId?: string;
+  documentId?: string;
   maxIterations?: number;
   initialMasteryList?: GetMasteryOutput["concepts"];
   signal?: AbortSignal;
@@ -216,6 +218,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
           verdict: "correct" | "partially_correct" | "incorrect";
           misconceptionLabel?: string;
           recoveryForMisconceptionLabel?: string;
+          clientAttemptId?: string;
         },
         RecordProgressOutput
       >("record_progress", {
@@ -224,15 +227,16 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<AgentTurnR
         verdict: trustedEvaluation.verdict,
         misconceptionLabel: trustedEvaluation.misconceptionLabel,
         recoveryForMisconceptionLabel: input.recoveryForMisconceptionLabel,
+        clientAttemptId: input.clientAttemptId,
       });
       recordedProgressOutput = res.result;
       toolTraces.push(res.trace);
       progressRecorded = true;
 
       // Refresh mastery state
-      const masteryRes = await executeMcpTool<Record<string, never>, GetMasteryOutput>(
+      const masteryRes = await executeMcpTool<{ documentId?: string }, GetMasteryOutput>(
         "get_mastery",
-        {},
+        { documentId: input.documentId },
       );
       currentMasteryList = masteryRes.result.concepts;
       toolTraces.push(masteryRes.trace);
@@ -457,9 +461,16 @@ async function executeAgentTool(ctx: ExecuteAgentToolContext): Promise<unknown> 
           answer: string;
           verdict: "correct" | "partially_correct" | "incorrect";
           misconceptionLabel?: string;
+          clientAttemptId?: string;
         },
         RecordProgressOutput
-      >("record_progress", { questionId, answer, verdict, misconceptionLabel });
+      >("record_progress", {
+        questionId,
+        answer,
+        verdict,
+        misconceptionLabel,
+        clientAttemptId: input.clientAttemptId,
+      });
       toolTraces.push(res.trace);
       onProgressRecorded();
       return res.result;

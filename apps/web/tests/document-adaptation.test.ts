@@ -246,17 +246,23 @@ Appendix only.
     expect(q.choices).toBeDefined();
     expect(q.choices?.length).toBe(4);
 
+    const db = openDb();
+    const qRow = db.prepare("SELECT expected_json FROM questions WHERE id = ?").get(q.questionId) as { expected_json: string };
+    db.close();
+    const correctLetter = JSON.parse(qRow.expected_json).correctAnswer;
+    const incorrectLetter = ["A", "B", "C", "D"].find((l) => l !== correctLetter)!;
+
     // Correct submission evaluation
     const evalCorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: "A",
+      answer: correctLetter,
     });
     expect(evalCorrect.evaluation?.verdict).toBe("correct");
 
     // Incorrect submission evaluation
     const evalIncorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: "B",
+      answer: incorrectLetter,
     });
     expect(evalIncorrect.evaluation?.verdict).toBe("incorrect");
     expect(evalIncorrect.evaluation?.explanation).toBeDefined();

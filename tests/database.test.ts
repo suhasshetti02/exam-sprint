@@ -11,8 +11,62 @@ function freshDb() {
 describe("SQLite migrations", () => {
   it("applies cleanly and is idempotent", () => {
     const db = new DatabaseSync(":memory:");
-    expect(applyMigrations(db)).toEqual(["001_init.sql", "002_rapid_fire.sql"]);
+    expect(applyMigrations(db)).toEqual([
+      "001_init.sql",
+      "002_rapid_fire.sql",
+      "003_idempotent_attempts.sql",
+    ]);
     expect(applyMigrations(db)).toEqual([]);
+  });
+
+  it("enforces client_attempt_id uniqueness per student while allowing NULLs", () => {
+    const db = freshDb();
+    seedConcepts(db);
+    db.prepare("INSERT INTO students (id) VALUES ('s1'), ('s2')").run();
+    // Seed sample notes and a question for attempts foreign keys
+    seedNotes(db);
+    seedQuestions(db);
+    const qRow = db.prepare("SELECT id, evidence_chunk_id, evidence_quote FROM questions LIMIT 1").get() as {
+      id: string;
+      evidence_chunk_id: string;
+      evidence_quote: string;
+    };
+
+    // First attempt with client_attempt_id 'cli_1' succeeds
+    db.prepare(
+      `INSERT INTO attempts (id, student_id, question_id, answer_text, verdict, evidence_chunk_id, evidence_quote, client_attempt_id)
+       VALUES ('att_1', 's1', ?, 'A', 'correct', ?, ?, 'cli_1')`,
+    ).run(qRow.id, qRow.evidence_chunk_id, qRow.evidence_quote);
+
+    // Duplicate client_attempt_id 'cli_1' for the same student fails
+    expect(() =>
+      db.prepare(
+        `INSERT INTO attempts (id, student_id, question_id, answer_text, verdict, evidence_chunk_id, evidence_quote, client_attempt_id)
+         VALUES ('att_2', 's1', ?, 'B', 'incorrect', ?, ?, 'cli_1')`,
+      ).run(qRow.id, qRow.evidence_chunk_id, qRow.evidence_quote),
+    ).toThrow();
+
+    // Same client_attempt_id 'cli_1' for a different student s2 succeeds
+    expect(() =>
+      db.prepare(
+        `INSERT INTO attempts (id, student_id, question_id, answer_text, verdict, evidence_chunk_id, evidence_quote, client_attempt_id)
+         VALUES ('att_3', 's2', ?, 'A', 'correct', ?, ?, 'cli_1')`,
+      ).run(qRow.id, qRow.evidence_chunk_id, qRow.evidence_quote),
+    ).not.toThrow();
+
+    // Multiple NULL client_attempt_id rows succeed (backwards compatibility)
+    expect(() =>
+      db.prepare(
+        `INSERT INTO attempts (id, student_id, question_id, answer_text, verdict, evidence_chunk_id, evidence_quote, client_attempt_id)
+         VALUES ('att_4', 's1', ?, 'A', 'correct', ?, ?, NULL)`,
+      ).run(qRow.id, qRow.evidence_chunk_id, qRow.evidence_quote),
+    ).not.toThrow();
+    expect(() =>
+      db.prepare(
+        `INSERT INTO attempts (id, student_id, question_id, answer_text, verdict, evidence_chunk_id, evidence_quote, client_attempt_id)
+         VALUES ('att_5', 's1', ?, 'A', 'correct', ?, ?, NULL)`,
+      ).run(qRow.id, qRow.evidence_chunk_id, qRow.evidence_quote),
+    ).not.toThrow();
   });
 
   it("creates the planned tables", () => {

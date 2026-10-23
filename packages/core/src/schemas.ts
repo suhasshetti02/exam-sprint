@@ -37,6 +37,7 @@ export const searchStudyNotesOutput = z.object({
 // --- get_mastery ---
 export const getMasteryInput = z.object({
   conceptIds: z.array(conceptId).max(50).optional(),
+  documentId: z.string().max(100).optional(),
 });
 export const getMasteryOutput = z.object({
   concepts: z.array(
@@ -98,6 +99,7 @@ export const recordProgressInput = z.object({
   misconceptionLabel: z.string().max(80).optional(),
   /** If this attempt was specifically to recover a diagnosed misconception */
   recoveryForMisconceptionLabel: z.string().max(80).optional(),
+  clientAttemptId: z.string().max(120).optional(),
 });
 export const recordProgressOutput = z.object({
   attemptId: z.string(),

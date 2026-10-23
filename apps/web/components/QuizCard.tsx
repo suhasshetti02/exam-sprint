@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, AlertCircle, XCircle, ArrowRight, HelpCircle } from "lucide-react";
+import { CheckCircle2, AlertCircle, XCircle, ArrowRight, HelpCircle, SkipForward, Repeat2, Lightbulb, BookOpen, ListChecks, MessageSquareText } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { Panel } from "./Panel";
 import type { EvaluationData, QuestionData } from "../lib/api-client";
@@ -17,6 +17,12 @@ interface QuizCardProps {
   progressionMode?: "guided" | "automatic";
   autoAdvanceCountdown?: number | null;
   onCancelAutoAdvance?: () => void;
+  onSkipQuestion?: () => void;
+  onRepeatQuestion?: () => void;
+  onExplainConcept?: () => void;
+  onGiveHint?: () => void;
+  onRequestMultipleChoice?: () => void;
+  onRequestShortAnswer?: () => void;
 }
 
 export function QuizCard({
@@ -29,6 +35,12 @@ export function QuizCard({
   progressionMode = "guided",
   autoAdvanceCountdown,
   onCancelAutoAdvance,
+  onSkipQuestion,
+  onRepeatQuestion,
+  onExplainConcept,
+  onGiveHint,
+  onRequestMultipleChoice,
+  onRequestShortAnswer,
 }: QuizCardProps) {
   const [prevQuestionId, setPrevQuestionId] = useState(question?.questionId);
   const [selectedAnswer, setSelectedAnswer] = useState(selectedOption || "");
@@ -156,6 +168,15 @@ export function QuizCard({
               </div>
             </form>
           )}
+
+          <div className="flex flex-wrap gap-1.5 border-t border-stone-800/60 pt-2" aria-label="Question controls">
+            {onSkipQuestion && <button type="button" disabled={isLoading} onClick={onSkipQuestion} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><SkipForward className="size-3" />Skip</button>}
+            {onRepeatQuestion && <button type="button" disabled={isLoading} onClick={onRepeatQuestion} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><Repeat2 className="size-3" />Repeat</button>}
+            {onExplainConcept && <button type="button" disabled={isLoading} onClick={onExplainConcept} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><BookOpen className="size-3" />Explain</button>}
+            {onGiveHint && <button type="button" disabled={isLoading} onClick={onGiveHint} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><Lightbulb className="size-3" />Hint</button>}
+            {onRequestMultipleChoice && <button type="button" disabled={isLoading} onClick={onRequestMultipleChoice} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><ListChecks className="size-3" />MCQ</button>}
+            {onRequestShortAnswer && <button type="button" disabled={isLoading} onClick={onRequestShortAnswer} className="inline-flex items-center gap-1 rounded-md border border-stone-700 px-2 py-1 text-[10px] text-stone-300 hover:border-amber-500/60 hover:text-amber-200 disabled:opacity-40"><MessageSquareText className="size-3" />Short answer</button>}
+          </div>
 
           {evaluation && (
             <div className="space-y-3 pt-1">

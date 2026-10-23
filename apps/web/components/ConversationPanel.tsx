@@ -95,6 +95,7 @@ export function ConversationPanel({
   const {
     voiceState,
     isSupported,
+    isSynthSupported,
     setWakeWordEnabled,
     voiceOutputEnabled,
     setVoiceOutputEnabled,
@@ -138,7 +139,21 @@ export function ConversationPanel({
   };
 
   const dynamicVoiceStatus =
-    voiceState === "listening_for_command"
+    !isSupported || voiceState === "unsupported"
+      ? isSynthSupported
+        ? "Voice input unavailable in this browser · speech output available"
+        : "Voice input and speech output unavailable in this browser"
+      : voiceState === "error"
+        ? voiceError || "Voice input error · check browser microphone permissions"
+        : voiceState === "requesting_permission"
+          ? "Requesting microphone permission…"
+          : voiceState === "disabled"
+            ? voiceOutputEnabled
+              ? "Voice input off · speech output on"
+              : isSynthSupported
+                ? "Voice input off · speech output available"
+                : "Voice input off · speech output unavailable"
+            : voiceState === "listening_for_command"
       ? "Listening for your voice answer or command…"
       : voiceState === "wake_listening"
         ? "Wake-word listening active ('Hey Tutor')…"
@@ -146,9 +161,7 @@ export function ConversationPanel({
           ? "Speaking tutor explanation aloud…"
           : voiceState === "processing"
             ? "Recognizing voice input…"
-            : voiceOutputEnabled
-              ? "Voice tutor active · Spoken answers, audio output & commands"
-              : "Voice tutor active (audio muted) · Voice input & commands active";
+            : "Voice status unavailable";
 
   return (
     <section

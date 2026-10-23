@@ -9,7 +9,7 @@
  * - Distinguishing student uploads from built-in sample notes
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -182,7 +182,8 @@ function extractHeadingFromText(text: string, fallbackIndex: number): string {
   // Pattern 1: Numbered heading, e.g. "1. Normalization Basics" or "2. DevOps Voice Companion"
   const numMatch = firstLine.match(/^[0-9]+[.:\-\s]+([A-Za-z0-9\s&/()\-–—]{3,50})(?:\s+(?:Problem|Background|Overview|Definition|Analysis):|[\r\n.]|$)/i);
   if (numMatch && numMatch[1] && numMatch[1].trim().length >= 3) {
-    return numMatch[1].trim();
+    const number = firstLine.match(/^(\d+(?:\.\d+)*)[.:\-\s]+/)?.[1];
+    return `${number ? `${number} ` : ""}${numMatch[1].trim()}`;
   }
 
   // Pattern 2: Heading with colon, e.g. "Executive Summary:" or "Key Findings:"
@@ -287,11 +288,28 @@ export function chunkPlainText(documentId: string, text: string): SourceChunk[] 
  * Validates balanced parentheses and brackets to eliminate incomplete sentence slices.
  */
 export function extractCleanSentences(text: string): string[] {
+  let inBibliography = false;
   const cleaned = text
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.replace(/^[=\-#_~*\s]+[0-9.]*\s*/, "").trim())
-    .filter((line) => line.length > 0 && !/^[=\-#_~*]+$/.test(line))
+    .filter((line) => {
+      if (/^(?:references|bibliography|works cited|literature cited)\s*:?[\s.]*$/i.test(line)) {
+        inBibliography = true;
+        return false;
+      }
+      if (inBibliography) return false;
+      if (!line || /^[=\-#_~*]+$/.test(line) || /^\d{1,4}$/.test(line)) return false;
+      if (/[,\uFF0C]\s*(?:and|or)\s+\d+[.)]?$/i.test(line)) return false;
+      // Drop common PDF layout debris before neighboring lines are joined.
+      if (/^(?:fig(?:ure)?|table)\s*\.?\s*\d+(?:\.\d+)*\b/i.test(line)) return false;
+      if (/^(?:references|bibliography|works cited|literature cited)\b/i.test(line)) return false;
+      if (/^[A-Z][A-Za-z'-]+,\s+[A-Z](?:\.|\s)/.test(line) && /\b(?:19|20)\d{2}\b/.test(line)) return false;
+      if (/[!?.,]{2,}/.test(line) || /\b(\w+)\s+\1\b/i.test(line)) return false;
+      // A long unspaced all-caps token is usually a merged heading/layout artifact.
+      if (/\b[A-Z]{18,}\b/.test(line)) return false;
+      return true;
+    })
     .join(" ");
 
   // Protect common abbreviations and numbers from regex period splitting
@@ -320,6 +338,12 @@ export function extractCleanSentences(text: string): string[] {
 
     // 3. Must end with terminal punctuation
     if (!/[.!?]["”'’]?$/.test(s)) continue;
+
+    // Source questions, captions and reference fragments are not answer evidence.
+    if (/^(?:how|what|why|when|where|which|who|fig(?:ure)?|table|references|bibliography)\b/i.test(s)) continue;
+    // Common OCR/list fragments often pass punctuation checks despite not being
+    // complete statements (for example, "The 3D object specification, and 2.").
+    if (/[,\uFF0C]\s*(?:and|or)\s+\d/i.test(s) || /\b(?:and|or|but|of|for|to|with|the|a|an)\s*[,.]?$/i.test(s)) continue;
 
     // 4. Must have balanced parentheses and brackets
     const openParen = (s.match(/\(/g) || []).length;
@@ -353,6 +377,7 @@ export function extractCleanSentences(text: string): string[] {
       trimmed.length >= 25 &&
       /^[A-Z"“'‘]/.test(trimmed) &&
       !/^(and|or|but|because|during|which|while|with|by|for)\b/i.test(trimmed) &&
+      !/^(?:how|what|why|when|where|which|who|fig(?:ure)?|table|references|bibliography)\b/i.test(trimmed) &&
       !/^(subject|purpose|author|document\s+title|title|course|overview|description|uploaded\s+by|copyright|all\s+rights\s+reserved|system\s+instruction|sample\s+notes)\s*:/i.test(trimmed) &&
       !/^(sample\s+notes\s+for\s+testing|notes\s+prepared\s+by|table\s+of\s+contents)\b/i.test(trimmed)
     ) {
@@ -597,11 +622,64 @@ export const DBMS_CONCEPT_TEMPLATES: ConceptQuestionTemplate[] = [
  * Generates verified question stubs for chunks so that `generate_quiz` and `evaluate_answer`
  * can deliver grounded quizzes for uploaded documents.
  */
+function cleanChoiceText(text: string): string {
+  return text
+    .replace(/^[-*•\d.)\s]+/, "")
+    .replace(/[*_#`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hashString(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+function questionConceptName(heading: string, preferredTopic?: string): string | undefined {
+  const clean = (value: string) => value
+    .replace(/^(?:what\s+is|define|explain|describe|teach\s+me\s+about|quiz\s+me\s+on)\s+/i, "")
+    .replace(/^(?:section|chapter)\s+\d+(?:\.\d+)*\s*[:.-]?\s*/i, "")
+    .replace(/^\d+(?:\.\d+)*[\s:.-]+/, "")
+    .replace(/\b(?:overview|objectives?|learning outcomes?|introduction|notes?)\b/gi, " ")
+    .replace(/[?!.,]+$/, "")
+    .replace(/[\s:–—-]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const meaningful = (value: string) => value.length >= 3 &&
+    !/^(?:section|chapter|unit|overview|this concept|study material)\s*\d*$/i.test(value) &&
+    !/\b(?:and|or|but|of|for|to|with|the|a|an)$/i.test(value);
+
+  const requested = preferredTopic ? clean(preferredTopic) : "";
+  if (meaningful(requested)) return requested.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+
+  const fromHeading = clean(heading.replace(/^[=\-#_~*\s]+|[=\-#_~*\s]+$/g, ""));
+  if (meaningful(fromHeading)) return fromHeading.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+
+  return undefined;
+}
+
+function conceptNameFromEvidence(quote: string): string | undefined {
+  const match = /^(?:a|an|the)\s+(.+?)\s+(?:is|are|occurs|happens|means|refers to|describes)\b/i.exec(quote);
+  const concept = match?.[1]?.trim();
+  return concept && concept.length <= 60 ? concept.replace(/\b[a-z]/g, (letter) => letter.toUpperCase()) : undefined;
+}
+
+function isLearningObjectiveOrCaption(sentence: string): boolean {
+  return /^(?:(?:in|by)\s+this\s+(?:unit|chapter|section)|(?:the\s+)?(?:learning\s+)?objectives?\b|(?:after\s+completing|at\s+the\s+end\s+of)\b|fig(?:ure)?\s*\.?\s*\d|table\s*\d)\b/i.test(sentence) ||
+    /\b(?:we aim to|students will be able to|you will learn to|learning objectives?)\b/i.test(sentence) ||
+    /\bobjectives?\b/i.test(sentence);
+}
+
 export function createQuestionForChunk(
   chunk: SourceChunk,
   conceptId: string,
   preferredTopic?: string,
   allChunks?: SourceChunk[],
+  forceCorrectIndex?: number,
+  requestedFormat?: "multiple_choice" | "short_answer",
 ): {
   id: string;
   conceptId: string;
@@ -614,7 +692,7 @@ export function createQuestionForChunk(
   evidenceEnd: number;
 } | null {
   // Extract grammatically clean sentences with abbreviation protection and balanced delimiter checks
-  const sentences = extractCleanSentences(chunk.text);
+  const sentences = extractCleanSentences(chunk.text).filter((sentence) => !isLearningObjectiveOrCaption(sentence));
 
   if (sentences.length === 0) return null;
 
@@ -623,16 +701,15 @@ export function createQuestionForChunk(
 
   // Only apply DBMS concept templates to documents/sections covering DBMS / Database concepts
   const isDbmsDocument =
-    chunk.documentId.toLowerCase().includes("dbms") ||
-    chunk.documentId.toLowerCase().includes("database") ||
-    chunk.documentId.toLowerCase().includes("normalization") ||
     /\b(normalization|normal form|1nf|2nf|3nf|bcnf|relational|database|sql|acid|transaction|concurrency|deadlock|foreign key|primary key|index)\b/i.test(
-      `${chunk.heading} ${chunk.text} ${preferredTopic ?? ""}`,
+      `${chunk.heading} ${chunk.text}`,
     );
 
   const matchedTemplate = isDbmsDocument
     ? DBMS_CONCEPT_TEMPLATES.find((tpl) => tpl.pattern.test(contextSearch))
     : undefined;
+
+  if (requestedFormat === "multiple_choice" && !matchedTemplate) return null;
 
   let quote = sentences[0]!;
   let prompt = "";
@@ -657,85 +734,17 @@ export function createQuestionForChunk(
     distractors = [...matchedTemplate.distractors];
   } else {
     // General document-adaptive question generation for non-DBMS concepts
+    const conceptName = questionConceptName(chunk.heading, preferredTopic) || conceptNameFromEvidence(quote);
+    if (!conceptName) return null;
+    const conceptTerms = conceptName.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
+    const searchableEvidence = `${chunk.heading} ${quote}`.toLowerCase();
+    if (conceptTerms.length > 0 && !conceptTerms.some((term) => searchableEvidence.includes(term))) return null;
 
-    // Extract clean concept name from heading or leading text
-    let conceptName = chunk.heading
-      .replace(/^[=\-#_~*\s]+/, "")
-      .replace(/[=\-#_~*\s]+$/, "")
-      .replace(/^(section|chapter)\s+[0-9.]+\s*:?\s*/i, "")
-      .replace(/^[0-9]+[.:\-\s]+/, "")
-      .trim();
+    prompt = `What is ${conceptName}, and how does it work according to your study notes?`;
 
-    if (
-      !conceptName ||
-      /^(section|chapter)\s+[0-9.]+/i.test(conceptName) ||
-      conceptName.toLowerCase() === "overview"
-    ) {
-      const firstLine = chunk.text.split(/\r?\n/)[0]?.trim() || "";
-      const numMatch = firstLine.match(
-        /^[0-9]+[.:\-\s]+([A-Za-z0-9\s&/()\-–—]{3,50})(?:\s+(?:Problem|Background|Overview|Definition|Analysis):|[\r\n.]|$)/i,
-      );
-      const colonMatch = firstLine.match(/^([A-Za-z0-9\s&/()\-–—]{3,40}):/);
-      const allCapsMatch = firstLine.match(/^([A-Z0-9\s&/()\-–—]{4,40})(?:\s+[a-z]|\.|$)/);
-
-      if (numMatch && numMatch[1] && numMatch[1].trim().length >= 3) {
-        conceptName = numMatch[1].trim();
-      } else if (colonMatch && colonMatch[1] && colonMatch[1].trim().length >= 3) {
-        conceptName = colonMatch[1].trim();
-      } else if (allCapsMatch && allCapsMatch[1] && allCapsMatch[1].trim().length >= 3) {
-        conceptName = allCapsMatch[1].trim();
-      } else if (
-        preferredTopic &&
-        preferredTopic.trim().length >= 3 &&
-        !/^(section|chapter)/i.test(preferredTopic)
-      ) {
-        conceptName = preferredTopic.trim();
-      } else {
-        conceptName = "this concept";
-      }
-    }
-
-    prompt = `Which statement accurately characterizes ${conceptName} according to your study notes?`;
-
-    // 1. Prioritize real educational sentences from OTHER chunks in the same document as plausible distractors
-    const candidateDistractorsFromOtherChunks: string[] = [];
-    if (allChunks && allChunks.length > 1) {
-      for (const other of allChunks) {
-        if (other.id === chunk.id) continue;
-        const otherSentences = extractCleanSentences(other.text);
-        for (const s of otherSentences) {
-          const cleanS = s.trim();
-          if (
-            cleanS.length >= 25 &&
-            cleanS.length <= 180 &&
-            cleanS !== quote &&
-            !cleanS.includes("...") &&
-            !cleanS.includes("…") &&
-            !cleanS.toLowerCase().includes(conceptName.toLowerCase()) &&
-            !candidateDistractorsFromOtherChunks.includes(cleanS)
-          ) {
-            candidateDistractorsFromOtherChunks.push(cleanS);
-            break; // Best sentence from this other chunk
-          }
-        }
-        if (candidateDistractorsFromOtherChunks.length >= 3) break;
-      }
-    }
-
-    if (candidateDistractorsFromOtherChunks.length >= 3) {
-      distractors = candidateDistractorsFromOtherChunks.slice(0, 3);
-    } else {
-      // Domain-neutral plausible fallback distractors that do NOT mention database tables or schema migrations
-      const fallbackOptions = [
-        "This principle operates exclusively as an isolated local mechanism without external synchronization.",
-        "This component executes synchronously and blocks all adjacent tasks until manual confirmation.",
-        "This state is volatile and resets automatically to initial default settings upon session restart.",
-      ];
-      distractors = [
-        ...candidateDistractorsFromOtherChunks,
-        ...fallbackOptions.filter((f) => !candidateDistractorsFromOtherChunks.includes(f)),
-      ].slice(0, 3);
-    }
+    // Sibling excerpts are not necessarily plausible distractors for this concept.
+    // Without a concept-specific validated distractor set, use the short-answer path.
+    distractors = [];
   }
 
   // Evidence verification check
@@ -749,34 +758,35 @@ export function createQuestionForChunk(
     }
   }
 
-  // Construct 4 choices with correct answer as choice A
-  const choices = [quote, ...distractors.slice(0, 3)];
-
-  const qId = `q_up_${chunk.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  // Keep persisted question IDs compact. Chunk IDs include document IDs and
+  // human-readable headings, which can exceed the API's reasonable key size.
+  const qId = `q_up_${createHash("sha256").update(chunk.id, "utf8").digest("hex").slice(0, 32)}`;
+  const cleanedQuote = cleanChoiceText(quote);
+  const cleanedDistractors = distractors.map(cleanChoiceText).filter(
+    (d) =>
+      d.length >= 20 &&
+      d.toLowerCase() !== cleanedQuote.toLowerCase() &&
+      !d.includes("...") &&
+      !d.includes("…") &&
+      !/^the opposite of/i.test(d),
+  );
 
   // Quality guardrails:
-  // 1. Must have exactly 4 choices
-  // 2. All 4 choices must be distinct (no duplicates)
-  // 3. No choice may contain ellipses ("..." or "…")
-  // 4. No choice may start with "The opposite of" or be malformed
-  // 5. Every choice must be at least 20 characters
-  // If reliable multiple-choice distractors cannot be formed, fall back cleanly to short_answer
+  // 1. Must have at least 3 distinct, defensible distractors
+  // 2. Distractors must not duplicate the quote
+  // If not satisfied, fall back cleanly to short_answer format without guessing
   if (
-    choices.length !== 4 ||
-    new Set(choices).size !== 4 ||
-    choices.some(
-      (c) =>
-        c.includes("...") ||
-        c.includes("…") ||
-        /^the opposite of/i.test(c.trim()) ||
-        c.trim().length < 20,
-    )
+    requestedFormat === "short_answer" ||
+    cleanedDistractors.length < 3 ||
+    new Set(cleanedDistractors.map((d) => d.toLowerCase())).size < 3
   ) {
     return {
       id: qId,
       conceptId,
       kind: "short_answer",
-      prompt: `Based on your study notes for ${chunk.heading}, explain this key concept in your own words:`,
+      prompt: prompt.endsWith("?")
+        ? prompt
+        : `What is ${questionConceptName(chunk.heading, preferredTopic)}, according to your study notes?`,
       choices: [],
       expected: {
         kind: "short_answer",
@@ -790,6 +800,23 @@ export function createQuestionForChunk(
     };
   }
 
+  // Deterministic permutation: distribute correct answer across positions A, B, C, D (0, 1, 2, 3)
+  const targetIndex =
+    forceCorrectIndex !== undefined
+      ? ((forceCorrectIndex % 4) + 4) % 4
+      : hashString(qId) % 4;
+
+  const choices: string[] = new Array(4);
+  choices[targetIndex] = cleanedQuote;
+  let dIdx = 0;
+  for (let i = 0; i < 4; i++) {
+    if (i !== targetIndex) {
+      choices[i] = cleanedDistractors[dIdx++]!;
+    }
+  }
+
+  const correctLetter = String.fromCharCode(65 + targetIndex);
+
   return {
     id: qId,
     conceptId,
@@ -798,7 +825,7 @@ export function createQuestionForChunk(
     choices,
     expected: {
       kind: "multiple_choice",
-      correctAnswer: "A",
+      correctAnswer: correctLetter,
       acceptableVariants: [quote],
       explanation: `Verified quote directly from your notes: "${quote}"`,
     },
@@ -835,7 +862,7 @@ export async function ingestDocument(
     .slice(0, fileName.lastIndexOf(".") > 0 ? fileName.lastIndexOf(".") : undefined)
     .trim();
   const slug = headingToSlug(cleanBase) || "untitled-note";
-  const documentId = `doc_${Date.now()}_${slug}`;
+  const documentId = `doc_${randomUUID()}_${slug}`;
   const title = cleanBase || "Untitled Study Note";
 
   let chunks: SourceChunk[] = [];
@@ -847,6 +874,14 @@ export async function ingestDocument(
   } else {
     chunks = chunkPlainText(documentId, text);
   }
+
+  // Heading slugs are not unique when a document repeats a section title.
+  // Keep each chunk identity unique within this new document regardless of
+  // repeated headings or rapid uploads with the same filename.
+  chunks = chunks.map((chunk, index) => ({
+    ...chunk,
+    id: `${documentId}#${headingToSlug(chunk.heading) || "section"}-${index + 1}`,
+  }));
 
   if (chunks.length === 0) {
     return {
@@ -909,7 +944,7 @@ export async function ingestDocument(
           question.conceptId,
           question.kind,
           question.prompt,
-          JSON.stringify(question.choices),
+          question.choices ? JSON.stringify(question.choices) : null,
           JSON.stringify(question.expected),
           chunk.id,
           question.evidenceQuote,

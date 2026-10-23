@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConversationPanel } from "../components/ConversationPanel";
@@ -20,6 +21,7 @@ describe("ConversationPanel", () => {
     render(<ConversationPanel />);
     expect((screen.getByLabelText(/microphone/i) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Voice off/i)).toBeTruthy();
+    expect(screen.getByText(/Voice input.*unavailable in this browser/)).toBeTruthy();
   });
 
   it("allows user to type and submit a message", () => {
@@ -69,6 +71,41 @@ describe("QuizCard", () => {
     render(<QuizCard question={sampleQuestion} />);
     expect(screen.getByText("What problem does second normal form remove?")).toBeTruthy();
     expect(screen.getByText(/Partial dependencies/)).toBeTruthy();
+  });
+
+  it("exposes compact quiz controls without submitting an answer", () => {
+    const onSubmitAnswer = vi.fn();
+    const onSkipQuestion = vi.fn();
+    const onRepeatQuestion = vi.fn();
+    const onExplainConcept = vi.fn();
+    const onGiveHint = vi.fn();
+    const onRequestMultipleChoice = vi.fn();
+    const onRequestShortAnswer = vi.fn();
+    render(<QuizCard
+      question={sampleQuestion}
+      onSubmitAnswer={onSubmitAnswer}
+      onSkipQuestion={onSkipQuestion}
+      onRepeatQuestion={onRepeatQuestion}
+      onExplainConcept={onExplainConcept}
+      onGiveHint={onGiveHint}
+      onRequestMultipleChoice={onRequestMultipleChoice}
+      onRequestShortAnswer={onRequestShortAnswer}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: /skip/i }));
+    fireEvent.click(screen.getByRole("button", { name: /repeat/i }));
+    fireEvent.click(screen.getByRole("button", { name: /explain/i }));
+    fireEvent.click(screen.getByRole("button", { name: /hint/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^mcq$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /short answer/i }));
+
+    expect(onSkipQuestion).toHaveBeenCalledOnce();
+    expect(onRepeatQuestion).toHaveBeenCalledOnce();
+    expect(onExplainConcept).toHaveBeenCalledOnce();
+    expect(onGiveHint).toHaveBeenCalledOnce();
+    expect(onRequestMultipleChoice).toHaveBeenCalledOnce();
+    expect(onRequestShortAnswer).toHaveBeenCalledOnce();
+    expect(onSubmitAnswer).not.toHaveBeenCalled();
   });
 
   it("shows verdict and diagnosed misconception when evaluated", () => {
@@ -181,6 +218,7 @@ describe("MasteryPanel", () => {
     expect(screen.getByText("80%")).toBeTruthy();
     expect(screen.getByText(/You have concepts flagged for review/i)).toBeTruthy();
   });
+
 });
 
 describe("ServerStatus", () => {

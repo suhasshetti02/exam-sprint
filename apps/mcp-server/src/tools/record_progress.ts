@@ -29,6 +29,7 @@ export const recordProgressTool: ToolDefinition<typeof recordProgressInput> = {
         verdict: input.verdict,
         misconceptionLabel: input.misconceptionLabel,
         recoveryForMisconceptionLabel: input.recoveryForMisconceptionLabel,
+        clientAttemptId: input.clientAttemptId,
       });
 
       const output = {

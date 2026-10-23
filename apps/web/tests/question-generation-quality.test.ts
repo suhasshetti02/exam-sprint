@@ -8,7 +8,9 @@ import {
 import {
   createQuestionForChunk,
   deleteDocument,
+  extractCleanSentences,
   ingestDocument,
+  openDb,
 } from "../lib/server/document-service";
 import {
   startTutoringSession,
@@ -145,7 +147,7 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
     expect(q.conceptId).toBe("concept-2nf");
     expect(q.kind).toBe("multiple_choice");
     expect(q.expected.kind).toBe("multiple_choice");
-    expect(q.expected.correctAnswer).toBe("A");
+    expect(["A", "B", "C", "D"]).toContain(q.expected.correctAnswer);
     expect(q.expected.acceptableVariants).toBeDefined();
     expect(q.expected.explanation).toContain(q.evidenceQuote);
 
@@ -193,23 +195,25 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
       verifiedAt: new Date().toISOString(),
     };
 
-    // Choice "A" must evaluate to correct
-    const evalA = evaluator.evaluate(questionRecord, "A");
-    expect(evalA.verdict).toBe("correct");
+    const correctLetter = q.expected.correctAnswer;
+    const correctIndex = correctLetter.charCodeAt(0) - 65;
 
-    // Choice by full text of option A must evaluate to correct (acceptableVariant)
-    const evalAText = evaluator.evaluate(questionRecord, q.choices[0]!);
-    expect(evalAText.verdict).toBe("correct");
+    // Evaluates displayed correct answer letter deterministically
+    const evalCorrect = evaluator.evaluate(questionRecord, correctLetter);
+    expect(evalCorrect.verdict).toBe("correct");
 
-    // Choices "B", "C", "D" must evaluate to incorrect
-    const evalB = evaluator.evaluate(questionRecord, "B");
-    expect(evalB.verdict).toBe("incorrect");
+    // Choice by full text of the correct option must evaluate to correct (acceptableVariant)
+    const evalCorrectText = evaluator.evaluate(questionRecord, q.choices[correctIndex]!);
+    expect(evalCorrectText.verdict).toBe("correct");
 
-    const evalC = evaluator.evaluate(questionRecord, "C");
-    expect(evalC.verdict).toBe("incorrect");
-
-    const evalD = evaluator.evaluate(questionRecord, "D");
-    expect(evalD.verdict).toBe("incorrect");
+    // All other options must evaluate to incorrect
+    const options = ["A", "B", "C", "D"];
+    for (const opt of options) {
+      if (opt !== correctLetter) {
+        const evalDistractor = evaluator.evaluate(questionRecord, opt);
+        expect(evalDistractor.verdict).toBe("incorrect");
+      }
+    }
   });
 
   it("5. Abstains cleanly when chunk content cannot satisfy question quality requirements", () => {
@@ -223,6 +227,136 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
 
     const q = createQuestionForChunk(ungroundedChunk, "concept-empty");
     expect(q).toBeNull();
+  });
+
+  it("rejects figure captions, bibliography fragments, and question-shaped OCR as evidence", () => {
+    const extracted = [
+      "Fig. 1.3 The Sensorama Simulator prototype.",
+      "IMMERSION 3 IMAGINATIONINTERACTION Fig. 1.2 The features of virtual reality.",
+      "How does virtual reality diller from augmented reality and telepresence?",
+      "References",
+      "Smith, J. Virtual Reality Systems, 2021.",
+    ].join("\n");
+
+    expect(extractCleanSentences(extracted)).toEqual([]);
+    expect(createQuestionForChunk({
+      id: "vr-caption-only",
+      documentId: "vr-notes",
+      heading: "Virtual Reality",
+      ordinal: 1,
+      text: extracted,
+    }, "vr-concept")).toBeNull();
+  });
+
+  it("uses short answer instead of unrelated sibling sentences as distractors", () => {
+    const chunk: SourceChunk = {
+      id: "vr-section-1",
+      documentId: "vr-notes",
+      heading: "1.1 The Three I's of Virtual Reality",
+      ordinal: 1,
+      text: "Virtual reality combines immersion, imagination, and interaction to create an engaging simulated environment.",
+    };
+    const siblings: SourceChunk[] = [
+      chunk,
+      { id: "vr-unrelated-2", documentId: "vr-notes", heading: "History", ordinal: 2, text: "The university was established in 1920 and later developed several engineering departments." },
+      { id: "vr-unrelated-3", documentId: "vr-notes", heading: "References", ordinal: 3, text: "Smith published the proceedings of the annual conference in 2021." },
+    ];
+
+    const question = createQuestionForChunk(chunk, "vr-concept", undefined, siblings);
+    expect(question?.kind).toBe("short_answer");
+    expect(question?.choices).toEqual([]);
+    expect(question?.evidenceQuote).toBe(chunk.text);
+  });
+
+  it("generates a complete named question from explanatory evidence, not a generic template", () => {
+    const chunk: SourceChunk = {
+      id: "cg-definition",
+      documentId: "graphics-notes",
+      heading: "Section 17",
+      ordinal: 17,
+      text: "Computer graphics is the use of computers to create, manipulate, and display visual images. It supports applications such as design, simulation, and animation.",
+    };
+
+    const question = createQuestionForChunk(chunk, "graphics", "What is computer graphics?");
+    expect(question?.kind).toBe("short_answer");
+    expect(question?.prompt).toBe("What is Computer Graphics, and how does it work according to your study notes?");
+    expect(question?.prompt).not.toMatch(/explain this key concept/i);
+    expect(question?.evidenceQuote).toContain("create, manipulate, and display visual images");
+    const evaluation = new DeterministicAnswerEvaluator(new DefaultEvidenceVerifier());
+    const record: QuestionRecord = {
+      id: question!.id,
+      conceptId: question!.conceptId,
+      kind: question!.kind,
+      prompt: question!.prompt,
+      choices: question!.choices,
+      expected: question!.expected,
+      evidenceChunkId: chunk.id,
+      evidenceQuote: question!.evidenceQuote,
+      evidenceStart: question!.evidenceStart,
+      evidenceEnd: question!.evidenceEnd,
+      verifiedAt: new Date().toISOString(),
+    };
+    expect(evaluation.evaluate(record, "Computers create and display visual images.", chunk).verdict).toBe("correct");
+    expect(evaluation.evaluate(record, "Computers do not create or display visual images.", chunk).verdict).toBe("incorrect");
+  });
+
+  it("does not use a learning objective as the answer evidence", () => {
+    const objectiveOnly: SourceChunk = {
+      id: "cg-objective-only",
+      documentId: "graphics-notes",
+      heading: "Section 17",
+      ordinal: 17,
+      text: "In this unit, we aim to understand how images are created and displayed using computers.",
+    };
+
+    expect(createQuestionForChunk(objectiveOnly, "graphics", "what is computer graphics")).toBeNull();
+  });
+
+  it("honors a short-answer request and abstains when an MCQ has no validated distractors", () => {
+    const dbmsChunk: SourceChunk = {
+      id: "format-2nf",
+      documentId: "format-notes",
+      heading: "2NF",
+      ordinal: 1,
+      text: "A relation is in Second Normal Form when it is in First Normal Form and every non-prime attribute is fully functionally dependent on every candidate key.",
+    };
+    const shortAnswer = createQuestionForChunk(dbmsChunk, "format-2nf", "2NF", undefined, undefined, "short_answer");
+    expect(shortAnswer?.kind).toBe("short_answer");
+    expect(shortAnswer?.prompt).toContain("Second Normal Form");
+    expect(shortAnswer?.expected.correctAnswer).toBe(shortAnswer?.evidenceQuote);
+
+    const genericChunk: SourceChunk = {
+      id: "format-rendering",
+      documentId: "format-notes",
+      heading: "Rendering Pipeline",
+      ordinal: 2,
+      text: "The rendering pipeline maps a 3D point into the display's field of view using the selected viewing parameters.",
+    };
+    expect(createQuestionForChunk(genericChunk, "format-rendering", undefined, undefined, undefined, "multiple_choice")).toBeNull();
+  });
+
+  it("rejects incomplete OCR clauses and orphaned headings", () => {
+    expect(extractCleanSentences("The 3D object specification, and 2.")).toEqual([]);
+    expect(createQuestionForChunk({
+      id: "ocr-fragment",
+      documentId: "graphics-notes",
+      heading: "The 3D Object Specification And",
+      ordinal: 1,
+      text: "The 3D object specification, and 2.",
+    }, "graphics")).toBeNull();
+  });
+
+  it("keeps valid technical text with symbols and numbers eligible", () => {
+    const chunk: SourceChunk = {
+      id: "vr-technical",
+      documentId: "vr-notes",
+      heading: "Rendering Pipeline",
+      ordinal: 1,
+      text: "The rendering pipeline maps a 3D point (x, y, z) into the headset's field of view using HMD/VR display parameters.",
+    };
+    const question = createQuestionForChunk(chunk, "vr-rendering");
+    expect(question).not.toBeNull();
+    expect(question?.evidenceQuote).toBe(chunk.text);
   });
 
   it("6. End-to-end startTutoringSession returns high-quality 2NF question in live session", async () => {
@@ -249,18 +383,47 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
       expect(choice).not.toContain("…");
     }
 
-    // Submit answer A -> correct
-    const evalResA = await submitStudentAnswer({
-      questionId: q.questionId,
-      answer: "A",
-    });
-    expect(evalResA.evaluation?.verdict).toBe("correct");
+    const db = openDb();
+    const qRow = db.prepare("SELECT expected_json FROM questions WHERE id = ?").get(q.questionId) as { expected_json: string };
+    db.close();
+    const correctLetter = JSON.parse(qRow.expected_json).correctAnswer;
+    const incorrectLetter = ["A", "B", "C", "D"].find((l) => l !== correctLetter)!;
 
-    // Submit answer B -> incorrect
-    const evalResB = await submitStudentAnswer({
+    // Submit correct answer -> correct
+    const evalResCorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: "B",
+      answer: correctLetter,
     });
-    expect(evalResB.evaluation?.verdict).toBe("incorrect");
+    expect(evalResCorrect.evaluation?.verdict).toBe("correct");
+
+    // Submit incorrect answer -> incorrect
+    const evalResIncorrect = await submitStudentAnswer({
+      questionId: q.questionId,
+      answer: incorrectLetter,
+    });
+    expect(evalResIncorrect.evaluation?.verdict).toBe("incorrect");
+  });
+
+  it("resolves numbered section requests to exact document headings", async () => {
+    const response = await startTutoringSession({
+      documentId: testDocId,
+      topic: "section 2",
+      goal: "full_document",
+    });
+
+    expect(response.sectionOrdinal).toBe(2);
+    expect(response.evidence?.chunkId.toLowerCase()).toContain("normal-forms");
+    expect(response.message).toContain("NORMAL FORMS");
+  });
+
+  it("does not silently substitute a missing requested section", async () => {
+    const response = await startTutoringSession({
+      documentId: testDocId,
+      topic: "section 12",
+      goal: "full_document",
+    });
+
+    expect(response.question).toBeUndefined();
+    expect(response.message).toMatch(/couldn't match section 12/i);
   });
 });

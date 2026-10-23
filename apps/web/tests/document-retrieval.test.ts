@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
-import { ingestDocument, deleteDocument } from "../lib/server/document-service";
+import { ingestDocument, deleteDocument, openDb } from "../lib/server/document-service";
 import { startTutoringSession, submitStudentAnswer } from "../lib/server/tutoring-policy";
 import { runTutoringOrchestration } from "../lib/server/llm/orchestrator";
 
@@ -169,9 +169,14 @@ A transaction is a logical unit of database work. A deadlock occurs when transac
 
     expect(session.question).toBeDefined();
 
+    const db = openDb();
+    const qRow = db.prepare("SELECT expected_json FROM questions WHERE id = ?").get(session.question!.questionId) as { expected_json: string };
+    db.close();
+    const correctLetter = JSON.parse(qRow.expected_json).correctAnswer;
+
     const evalRes = await submitStudentAnswer({
       questionId: session.question!.questionId,
-      answer: "A",
+      answer: correctLetter,
     });
 
     expect(evalRes.evaluation).toBeDefined();

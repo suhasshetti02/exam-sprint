@@ -55,5 +55,6 @@ export interface ProgressStore {
     verdict: Verdict;
     misconceptionLabel?: string;
     recoveryForMisconceptionLabel?: string;
+    clientAttemptId?: string;
   }): Promise<ProgressUpdate>;
 }

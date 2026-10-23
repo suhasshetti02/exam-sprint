@@ -20,6 +20,7 @@ import {
   type DocumentTopicSuggestion,
   type EvaluationData,
   type EvidenceData,
+  type ExecutionMetadata,
   type MasteryConcept,
   type QuestionData,
   type ServerStatus as Status,
@@ -46,6 +47,20 @@ const GOAL_LABELS: Record<LearningGoal, { label: string; icon: string }> = {
   weak: { label: "Revise Weak Concepts", icon: "🎯" },
   full_document: { label: "Full Document Study", icon: "📚" },
 };
+
+let messageCounter = 0;
+function createMsgId(prefix: string): string {
+  messageCounter += 1;
+  return `${prefix}_${Date.now()}_${messageCounter}`;
+}
+
+function createAttemptId(questionId: string): string {
+  return `attempt_${questionId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function createIsoTimestamp(): string {
+  return new Date().toISOString();
+}
 
 export function TutoringSession() {
   const [isSessionActive, setIsSessionActive] = useState(false);
@@ -75,7 +90,7 @@ export function TutoringSession() {
       id: "welcome-1",
       role: "tutor",
       text: "Welcome to Exam Sprint! I'm your Alexa+ adaptive exam tutor. Select a topic below or type what you'd like to practice, and every question will be grounded in verified evidence from your study notes.",
-      timestamp: new Date().toISOString(),
+      timestamp: "2026-01-01T00:00:00.000Z",
     },
   ]);
 
@@ -91,12 +106,24 @@ export function TutoringSession() {
   const [showStatusChecklist, setShowStatusChecklist] = useState(false);
   const [suggestedTopics, setSuggestedTopics] = useState<DocumentTopicSuggestion[]>([]);
   const [currentProvider, setCurrentProvider] = useState<"llm" | "deterministic_fallback">("deterministic_fallback");
+  const [executionMetadata, setExecutionMetadata] = useState<ExecutionMetadata | undefined>();
   const [selectedOption, setSelectedOption] = useState<string | undefined>();
   const [progressionMode, setProgressionMode] = useState<ProgressionMode>("guided");
   const [autoAdvanceCountdown, setAutoAdvanceCountdown] = useState<number | null>(null);
+  const [currentSectionOrdinal, setCurrentSectionOrdinal] = useState(1);
+  const [pendingVoiceSubmission, setPendingVoiceSubmission] = useState<{
+    optionLetter: "A" | "B" | "C" | "D" | "E";
+    rawTranscript: string;
+  } | null>(null);
+
 
   // Monotonic request counter ref to eliminate race conditions on overlapping or rapid topic switches
   const latestRequestIdRef = useRef(0);
+
+  // In-flight double-click protection and stable retry attempt ID tracking
+  const inFlightSubmissionRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
+  const lastAttemptRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
+  const nextQuestionInFlightRef = useRef(false);
 
   // Auto-advance progression timer refs
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -157,7 +184,7 @@ export function TutoringSession() {
       selectedOption,
     },
     onCommand: (cmd, raw) => {
-      voiceCommandRef.current(cmd, raw);
+      return voiceCommandRef.current(cmd, raw);
     },
     onSpeechEnd: () => {
       if (latestEvaluationRef.current && progressionModeRef.current === "automatic") {
@@ -165,6 +192,19 @@ export function TutoringSession() {
       }
     },
   });
+
+  // Global keyboard shortcuts: Esc to stop speaking & cancel voice prompts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        voice.stopSpeaking();
+        cancelAutoAdvance();
+        setPendingVoiceSubmission(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [voice]);
 
   // Fetch initial learning history & server status on load
   useEffect(() => {
@@ -174,9 +214,7 @@ export function TutoringSession() {
       .then((data) => {
         if (!active) return;
         setMasteryList(data.masteryList);
-        if (data.toolTraces && data.toolTraces.length > 0) {
-          setToolTraces((prev) => [...data.toolTraces, ...prev]);
-        }
+        setToolTraces(data.toolTraces || []);
       })
       .catch(() => {
         // Handled silently
@@ -249,6 +287,9 @@ export function TutoringSession() {
     docId?: string,
     goal?: LearningGoal,
     docTitle?: string,
+    sectionOrdinal?: number,
+    questionFormat?: "multiple_choice" | "short_answer",
+    excludeQuestionId?: string,
   ) => {
     const requestId = ++latestRequestIdRef.current;
     const cleanTopic = (topic || "").trim();
@@ -258,22 +299,25 @@ export function TutoringSession() {
     const effectiveDocId = docId || activeDocumentId;
     const effectiveGoal = goal || activeGoal;
     const effectiveTitle = docTitle || activeDocumentTitle;
+    const effectiveOrdinal = sectionOrdinal !== undefined ? sectionOrdinal : currentSectionOrdinal;
 
     setIsLoading(true);
     setErrorMessage(undefined);
 
-    const userMsgId = `user_${Date.now()}`;
+    const userMsgId = createMsgId("user");
     const userText = isWeak
       ? "Please review my weak concepts."
       : cleanTopic
         ? cleanTopic
         : effectiveGoal === "teach"
           ? `Teach me about ${effectiveTitle}`
-          : "Let's start a revision session.";
+          : effectiveGoal === "full_document"
+            ? `Study ${effectiveTitle} section ${effectiveOrdinal}`
+            : "Let's start a revision session.";
 
     const newMessages: MessageItem[] = [
       ...messages,
-      { id: userMsgId, role: "user", text: userText, timestamp: new Date().toISOString() },
+      { id: userMsgId, role: "user", text: userText, timestamp: createIsoTimestamp() },
     ];
     setMessages(newMessages);
 
@@ -283,11 +327,18 @@ export function TutoringSession() {
         focus: resolvedFocus,
         documentId: effectiveDocId,
         goal: effectiveGoal,
+        sectionOrdinal: effectiveGoal === "full_document" ? effectiveOrdinal : undefined,
+        questionFormat,
+        excludeQuestionId,
       });
 
       if (requestId !== latestRequestIdRef.current) {
         // Stale response from an earlier request discarded
         return;
+      }
+
+      if (effectiveGoal === "full_document" && res.sectionOrdinal !== undefined) {
+        setCurrentSectionOrdinal(res.sectionOrdinal);
       }
 
       let q: QuestionData | undefined = currentQuestion;
@@ -299,29 +350,42 @@ export function TutoringSession() {
         setCurrentEvidence(res.evidence);
         setLatestEvaluation(undefined);
         latestEvaluationRef.current = undefined;
+        setSelectedOption(undefined);
+        setPendingVoiceSubmission(null);
         q = res.question;
         ev = res.evidence;
       } else if (!res.question) {
         // If question could not be generated (e.g. unsupported topic)
         setErrorMessage(res.message);
+        if (excludeQuestionId) {
+          setCurrentQuestion(undefined);
+          setCurrentEvidence(undefined);
+          setLatestEvaluation(undefined);
+          latestEvaluationRef.current = undefined;
+          setSelectedOption(undefined);
+          setPendingVoiceSubmission(null);
+        }
       }
 
       if (res.provider) {
         setCurrentProvider(res.provider);
       }
+      if (res.executionMetadata) {
+        setExecutionMetadata(res.executionMetadata);
+      }
 
       setMasteryList(res.masteryList);
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
         ...newMessages,
         {
-          id: `tutor_${Date.now()}`,
+          id: createMsgId("tutor"),
           role: "tutor",
           text: res.message,
-          timestamp: new Date().toISOString(),
+          timestamp: createIsoTimestamp(),
         },
       ];
       setMessages(finalMessages);
@@ -351,7 +415,7 @@ export function TutoringSession() {
             messages: finalMessages,
             question: q,
             evidence: ev,
-            savedAt: new Date().toISOString(),
+            savedAt: createIsoTimestamp(),
           } satisfies SavedSession),
         );
       } catch {
@@ -366,10 +430,10 @@ export function TutoringSession() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `sys_${Date.now()}`,
+          id: createMsgId("sys"),
           role: "system",
           text: `Error: ${msg}`,
-          timestamp: new Date().toISOString(),
+          timestamp: createIsoTimestamp(),
         },
       ]);
     } finally {
@@ -381,25 +445,52 @@ export function TutoringSession() {
 
   const handleSubmitAnswer = async (answer: string) => {
     if (!currentQuestion) return;
+    if (latestEvaluationRef.current) return;
     const activeQuestionId = currentQuestion.questionId;
+
+    // Concurrent double-click guard: ignore duplicate in-flight invocation
+    if (inFlightSubmissionRef.current) {
+      return;
+    }
+
+    // Reuse stable clientAttemptId for retries of the exact same answer attempt; otherwise generate a new one
+    let clientAttemptId: string;
+    if (
+      lastAttemptRef.current &&
+      lastAttemptRef.current.questionId === activeQuestionId &&
+      lastAttemptRef.current.answer === answer
+    ) {
+      clientAttemptId = lastAttemptRef.current.clientAttemptId;
+    } else {
+      clientAttemptId = createAttemptId(activeQuestionId);
+      lastAttemptRef.current = { questionId: activeQuestionId, answer, clientAttemptId };
+    }
+
+    inFlightSubmissionRef.current = { questionId: activeQuestionId, answer, clientAttemptId };
     const requestId = ++latestRequestIdRef.current;
 
     setIsLoading(true);
     setErrorMessage(undefined);
 
-    const userMsgId = `user_${Date.now()}`;
+    const userMsgId = createMsgId("user");
     const newMessages: MessageItem[] = [
       ...messages,
-      { id: userMsgId, role: "user", text: answer, timestamp: new Date().toISOString() },
+      { id: userMsgId, role: "user", text: answer, timestamp: createIsoTimestamp() },
     ];
     setMessages(newMessages);
 
     try {
-      const res = await submitAnswer(activeQuestionId, answer);
+      const res = await submitAnswer(activeQuestionId, answer, {
+        clientAttemptId,
+        documentId: activeDocumentId,
+      });
 
       if (requestId !== latestRequestIdRef.current) {
         return;
       }
+
+      // Successful completion clears retry attempt state
+      lastAttemptRef.current = null;
 
       let q: QuestionData | undefined = currentQuestion;
       let ev: EvidenceData | undefined = currentEvidence;
@@ -414,6 +505,7 @@ export function TutoringSession() {
         ev = res.evidence || res.question.evidence;
       } else {
         setLatestEvaluation(res.evaluation);
+        latestEvaluationRef.current = res.evaluation;
         if (res.evidence) {
           setCurrentEvidence(res.evidence);
           ev = res.evidence;
@@ -422,20 +514,23 @@ export function TutoringSession() {
       if (res.provider) {
         setCurrentProvider(res.provider);
       }
+      if (res.executionMetadata) {
+        setExecutionMetadata(res.executionMetadata);
+      }
 
       setMasteryList(res.masteryList);
 
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
         ...newMessages,
         {
-          id: `tutor_${Date.now()}`,
+          id: createMsgId("tutor"),
           role: "tutor",
           text: res.message,
-          timestamp: new Date().toISOString(),
+          timestamp: createIsoTimestamp(),
         },
       ];
       setMessages(finalMessages);
@@ -465,7 +560,7 @@ export function TutoringSession() {
             messages: finalMessages,
             question: q,
             evidence: ev,
-            savedAt: new Date().toISOString(),
+            savedAt: createIsoTimestamp(),
           } satisfies SavedSession),
         );
       } catch {
@@ -480,28 +575,122 @@ export function TutoringSession() {
       setMessages((prev) => [
         ...prev,
         {
-          id: `sys_${Date.now()}`,
+          id: createMsgId("sys"),
           role: "system",
           text: `Error: ${msg}`,
-          timestamp: new Date().toISOString(),
+          timestamp: createIsoTimestamp(),
         },
       ]);
     } finally {
+      inFlightSubmissionRef.current = null;
       if (requestId === latestRequestIdRef.current) {
         setIsLoading(false);
       }
     }
   };
 
-  const handleNextQuestion = () => {
+  const handleNextQuestion = async () => {
+    if (nextQuestionInFlightRef.current || isLoading) return;
+    nextQuestionInFlightRef.current = true;
     cancelAutoAdvance();
     setSelectedOption(undefined);
     setLatestEvaluation(undefined);
     latestEvaluationRef.current = undefined;
-    if (currentQuestion) {
-      handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, "quiz");
+    setPendingVoiceSubmission(null);
+    try {
+      if (activeGoal === "full_document") {
+        const nextSec = currentSectionOrdinal + 1;
+        setCurrentSectionOrdinal(nextSec);
+        await handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, nextSec);
+      } else if (activeGoal === "weak") {
+        await handleStartTopic("weak", "weak", activeDocumentId, "weak", undefined, undefined, undefined, currentQuestion?.questionId);
+      } else if (currentQuestion) {
+        await handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      } else {
+        await handleStartTopic(suggestedTopics[0]?.topic ?? "", "new", activeDocumentId, activeGoal);
+      }
+    } finally {
+      nextQuestionInFlightRef.current = false;
+    }
+  };
+
+  const handleSkipQuestion = async () => {
+    if (!currentQuestion) {
+      setMessages((previous) => [...previous, {
+        id: createMsgId("tutor_skip_none"),
+        role: "tutor",
+        text: "There is no active question to skip.",
+        timestamp: createIsoTimestamp(),
+      }]);
+      return;
+    }
+    if (nextQuestionInFlightRef.current || isLoading) return;
+    nextQuestionInFlightRef.current = true;
+    cancelAutoAdvance();
+    setMessages((previous) => [...previous, {
+      id: createMsgId("tutor_skip"),
+      role: "tutor",
+      text: "Skipped without grading or recording an attempt.",
+      timestamp: createIsoTimestamp(),
+    }]);
+    const nextTopic = suggestedTopics.find((topic) =>
+      topic.topic.toLowerCase() !== currentQuestion?.conceptId.toLowerCase() &&
+      topic.label.toLowerCase() !== currentQuestion?.conceptId.toLowerCase(),
+    );
+    try {
+      if (nextTopic) {
+        await handleStartTopic(nextTopic.topic, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      } else if (activeGoal === "full_document") {
+        const nextSec = currentSectionOrdinal + 1;
+        setCurrentSectionOrdinal(nextSec);
+        await handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, nextSec);
+      } else if (activeGoal === "weak") {
+        await handleStartTopic("weak", "weak", activeDocumentId, "weak", undefined, undefined, undefined, currentQuestion.questionId);
+      } else if (currentQuestion) {
+        await handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      }
+    } finally {
+      nextQuestionInFlightRef.current = false;
+    }
+  };
+
+  const handleRequestQuestionFormat = (questionFormat: "multiple_choice" | "short_answer") => {
+    if (!currentQuestion) return;
+    const topic = currentQuestion.evidence?.chunkId.split("#").pop()?.replace(/[-_]+/g, " ") || currentQuestion.conceptId;
+    void handleStartTopic(topic, "new", activeDocumentId, activeGoal, undefined, undefined, questionFormat);
+  };
+
+  const handleRepeatActiveQuestion = () => {
+    if (!currentQuestion) return;
+    const choices = currentQuestion.choices?.map((choice, index) => `${String.fromCharCode(65 + index)}) ${choice}`).join("\n");
+    const text = `Repeating question:\n\n${currentQuestion.prompt}${choices ? `\n\n${choices}` : ""}`;
+    setMessages((previous) => [...previous, { id: createMsgId("tutor_repeat"), role: "tutor", text, timestamp: createIsoTimestamp() }]);
+    if (voice.voiceOutputEnabled) voice.speak(text);
+  };
+
+  const handleGiveQuestionHint = () => {
+    if (!currentQuestion) return;
+    const text = `Hint: Focus on the verified passage for ${currentQuestion.conceptId.replace(/[_-]+/g, " ")} and identify the phrase that directly answers the question. I can explain the concept if you want the full explanation.`;
+    setMessages((previous) => [...previous, { id: createMsgId("tutor_hint"), role: "tutor", text, timestamp: createIsoTimestamp() }]);
+    if (voice.voiceOutputEnabled) voice.speak(text);
+  };
+
+  const handleSwitchMode = (goal: LearningGoal) => {
+    setActiveGoal(goal);
+    cancelAutoAdvance();
+    setSelectedOption(undefined);
+    setLatestEvaluation(undefined);
+    latestEvaluationRef.current = undefined;
+    setPendingVoiceSubmission(null);
+    if (goal === "weak") {
+      handleStartTopic("weak", "weak", activeDocumentId, "weak");
+    } else if (goal === "full_document") {
+      setCurrentSectionOrdinal(1);
+      handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, 1);
+    } else if (goal === "teach") {
+      handleStartTopic(undefined, "new", activeDocumentId, "teach");
     } else {
-      handleStartTopic(suggestedTopics[0]?.topic ?? "", "new", activeDocumentId, "quiz");
+      handleStartTopic(undefined, "new", activeDocumentId, "quiz");
     }
   };
 
@@ -510,18 +699,22 @@ export function TutoringSession() {
     setIsLoading(true);
     setErrorMessage(undefined);
 
-    const userMsgId = `user_${Date.now()}`;
+    const userMsgId = createMsgId("user");
     const newMessages: MessageItem[] = [
       ...messages,
-      { id: userMsgId, role: "user", text: query, timestamp: new Date().toISOString() },
+      { id: userMsgId, role: "user", text: query, timestamp: createIsoTimestamp() },
     ];
     setMessages(newMessages);
 
     try {
       const res = await startSession({
         topic: query,
-        goal: "teach",
+        goal: activeGoal,
         documentId: activeDocumentId,
+        requestType: "question",
+        contextChunkId: currentEvidence?.chunkId || currentQuestion?.evidence?.chunkId,
+        activeConceptId: currentQuestion?.conceptId,
+        contextQuestion: currentQuestion?.prompt,
       });
 
       if (requestId !== latestRequestIdRef.current) return;
@@ -532,18 +725,19 @@ export function TutoringSession() {
       if (res.provider) {
         setCurrentProvider(res.provider);
       }
+      setExecutionMetadata(res.executionMetadata);
       setMasteryList(res.masteryList);
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
         ...newMessages,
         {
-          id: `tutor_${Date.now()}`,
+          id: createMsgId("tutor"),
           role: "tutor",
           text: res.message,
-          timestamp: new Date().toISOString(),
+          timestamp: createIsoTimestamp(),
         },
       ];
       setMessages(finalMessages);
@@ -606,11 +800,22 @@ export function TutoringSession() {
             return;
           }
           setSelectedOption(command.optionLetter);
-          await handleSubmitAnswer(command.optionLetter);
+          // Set pending voice confirmation banner with inspection and retry paths
+          setPendingVoiceSubmission({
+            optionLetter: command.optionLetter,
+            rawTranscript: rawTranscript,
+          });
+          if (voice.voiceOutputEnabled) {
+            voice.speak(`Selected option ${command.optionLetter}. Say 'Submit' or click Confirm to grade.`);
+          }
           break;
         }
         case "submit_answer": {
-          if (currentQuestion && !latestEvaluation) {
+          if (pendingVoiceSubmission) {
+            const opt = pendingVoiceSubmission.optionLetter;
+            setPendingVoiceSubmission(null);
+            await handleSubmitAnswer(opt);
+          } else if (currentQuestion && !latestEvaluation) {
             await handleSubmitAnswer(command.answerText);
           } else if (latestEvaluation) {
             voice.speak("This question has already been evaluated. Say 'Next question' to continue.");
@@ -619,13 +824,17 @@ export function TutoringSession() {
         }
         case "start_quiz": {
           cancelAutoAdvance();
-          const target = command.topic || activeDocumentTitle || "quiz";
-          await handleStartTopic(target, "new", activeDocumentId, "quiz");
+          const target = command.topic || currentQuestion?.conceptId || activeDocumentTitle || "quiz";
+          await handleStartTopic(target, "new", activeDocumentId, "quiz", undefined, undefined, command.questionFormat);
           break;
         }
         case "next_question": {
           cancelAutoAdvance();
           handleNextQuestion();
+          break;
+        }
+        case "skip_question": {
+          await handleSkipQuestion();
           break;
         }
         case "previous_question": {
@@ -634,40 +843,44 @@ export function TutoringSession() {
         }
         case "repeat_question": {
           if (currentQuestion) {
-            let questionAudio = `Question: ${currentQuestion.prompt}.`;
-            if (currentQuestion.kind === "multiple_choice" && currentQuestion.choices) {
-              const choicesSpoken = currentQuestion.choices
-                .map((c, i) => `Option ${String.fromCharCode(65 + i)}: ${c}`)
-                .join(". ");
-              questionAudio += ` Choices are: ${choicesSpoken}`;
-            }
-            voice.speak(questionAudio);
             setMessages((prev) => [
               ...prev,
               {
                 id: `tutor_repeat_${Date.now()}`,
                 role: "tutor",
-                text: `Repeating question: "${currentQuestion.prompt}"`,
+                text: `Repeating question:\n\n"${currentQuestion.prompt}"${
+                  currentQuestion.choices
+                    ? "\n\n" + currentQuestion.choices.map((c, i) => `${String.fromCharCode(65 + i)}) ${c}`).join("\n")
+                    : ""
+                }`,
                 timestamp: new Date().toISOString(),
               },
             ]);
           } else {
-            voice.speak("There is no active question right now.");
+            const msg = "There is no active question right now.";
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `tutor_repeat_none_${Date.now()}`,
+                role: "tutor",
+                text: msg,
+                timestamp: new Date().toISOString(),
+              },
+            ]);
+            if (voice.voiceOutputEnabled) {
+              voice.speak(msg);
+            }
           }
           break;
         }
         case "read_options": {
           if (currentQuestion?.choices && currentQuestion.choices.length > 0) {
-            const choicesSpoken = currentQuestion.choices
-              .map((c, i) => `Option ${String.fromCharCode(65 + i)}: ${c}`)
-              .join(". ");
-            voice.speak(`The options are: ${choicesSpoken}`);
             setMessages((prev) => [
               ...prev,
               {
                 id: `tutor_options_${Date.now()}`,
                 role: "tutor",
-                text: `Options: ${choicesSpoken}`,
+                text: `Options:\n${currentQuestion.choices?.map((c, i) => `${String.fromCharCode(65 + i)}) ${c}`).join("\n")}`,
                 timestamp: new Date().toISOString(),
               },
             ]);
@@ -676,56 +889,106 @@ export function TutoringSession() {
           }
           break;
         }
+        case "repeat_explanation":
         case "explain_answer": {
+          let responseText = "";
+          const target = command.type === "explain_answer" ? command.target : undefined;
           if (latestEvaluation) {
-            const prefix =
-              latestEvaluation.verdict === "correct"
-                ? "Your answer was correct! "
-                : "Here is why that was incorrect: ";
-            let text = `${prefix}${latestEvaluation.explanation}`;
-            if (currentEvidence?.quote) {
-              text += ` Verified note excerpt: "${currentEvidence.quote.slice(0, 140)}"`;
-            }
-            voice.speak(text);
-          } else {
-            const lastTutorMsg = [...messages].reverse().find((m) => m.role === "tutor");
-            if (lastTutorMsg) {
-              voice.speak(lastTutorMsg.text);
+            if (target === "why_wrong") {
+              const isCorrect = latestEvaluation.verdict === "correct";
+              responseText = isCorrect
+                ? `Your answer was actually marked correct! Here is why: ${latestEvaluation.explanation}`
+                : `Here is why your answer was marked ${latestEvaluation.verdict}: ${latestEvaluation.explanation}`;
+            } else if (target === "why_correct") {
+              responseText = `Here is why the correct answer is supported by your notes:\n\n${latestEvaluation.explanation}`;
             } else {
-              voice.speak("Please submit an answer first, and I will explain the reasoning based on your notes.");
+              const prefix =
+                latestEvaluation.verdict === "correct"
+                  ? "Your answer was correct! "
+                  : "Here is the explanation: ";
+              responseText = `${prefix}${latestEvaluation.explanation}`;
             }
+            if (currentEvidence?.quote) {
+              responseText += `\n\nVerified source note excerpt:\n"${currentEvidence.quote}"`;
+            }
+          } else if (currentQuestion) {
+            responseText = "Please submit an answer first, or say 'Give me a hint' if you'd like a clue from the study notes!";
+          } else {
+            responseText = "Select a topic or start a quiz to explore explanations.";
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `tutor_explain_${Date.now()}`,
+              role: "tutor",
+              text: responseText,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          if (voice.voiceOutputEnabled) {
+            voice.speak(responseText);
           }
           break;
         }
         case "simplify_explanation": {
+          let responseText = "";
           if (latestEvaluation?.explanation) {
-            const simplified = `In simpler terms: ${latestEvaluation.explanation.split(".")[0]}.`;
-            voice.speak(simplified);
+            const firstSentence = latestEvaluation.explanation.split(/[.!?]/)[0] || latestEvaluation.explanation;
+            responseText = `In simpler terms: ${firstSentence.trim()}.`;
+            if (currentEvidence?.quote) {
+              responseText += `\n\nCore fact: "${currentEvidence.quote.slice(0, 140)}"`;
+            }
+          } else if (currentEvidence?.quote) {
+            responseText = `In simpler terms, this section is about: "${currentEvidence.quote.slice(0, 140)}"`;
           } else {
-            voice.speak("I don't have an explanation to simplify yet. Let's work on the active question first.");
+            responseText = "I don't have an explanation to simplify yet. Let's work on the active question first.";
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `tutor_simplify_${Date.now()}`,
+              role: "tutor",
+              text: responseText,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          if (voice.voiceOutputEnabled) {
+            voice.speak(responseText);
           }
           break;
         }
         case "request_example": {
+          let responseText = "";
           if (currentEvidence?.quote) {
-            voice.speak(`Here is an illustrative excerpt from your notes: "${currentEvidence.quote.slice(0, 140)}"`);
-          } else if (currentQuestion) {
-            voice.speak(`Consider this question in practice: "${currentQuestion.prompt}"`);
+            responseText = `I don't have a concrete example in your notes for this concept. The verified passage says:\n\n"${currentEvidence.quote}"`;
+          } else if (currentQuestion?.evidence?.quote) {
+            responseText = `I don't have a concrete example in your notes for this concept. The verified passage says:\n\n"${currentQuestion.evidence.quote}"`;
           } else {
-            voice.speak("Select a topic to explore practical examples.");
+            responseText = "I don't have verified source material for an example yet. Please select a topic or upload notes first.";
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `tutor_example_${Date.now()}`,
+              role: "tutor",
+              text: responseText,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          if (voice.voiceOutputEnabled) {
+            voice.speak(responseText);
           }
           break;
         }
         case "give_hint": {
           if (currentEvidence?.quote) {
             const hint = `Here is a hint from your study notes: "${currentEvidence.quote.slice(0, 140)}..."`;
-            voice.speak(hint);
             setMessages((prev) => [
               ...prev,
               {
                 id: `tutor_hint_${Date.now()}`,
                 role: "tutor",
-                text: `💡 ${hint}`,
+                text: hint,
                 timestamp: new Date().toISOString(),
               },
             ]);
@@ -740,12 +1003,14 @@ export function TutoringSession() {
         }
         case "teach_topic": {
           cancelAutoAdvance();
-          await handleStartTopic(command.topic, "new", activeDocumentId, "teach");
+          const isSectionRequest = /^(?:(?:the\s+)?(?:section|chapter)\s+)?\d+(?:\.\d+)*(?:\s+.*)?$/i.test(command.topic);
+          const goal = activeGoal === "full_document" && isSectionRequest ? "full_document" : "teach";
+          await handleStartTopic(command.topic, "new", activeDocumentId, goal);
           break;
         }
         case "quiz_topic": {
           cancelAutoAdvance();
-          await handleStartTopic(command.topic, "new", activeDocumentId, "quiz");
+          await handleStartTopic(command.topic, "new", activeDocumentId, "quiz", undefined, undefined, command.questionFormat);
           break;
         }
         case "review_weak": {
@@ -754,7 +1019,9 @@ export function TutoringSession() {
         }
         case "study_full_document": {
           cancelAutoAdvance();
-          await handleStartTopic("full_document");
+          setActiveGoal("full_document");
+          setCurrentSectionOrdinal(1);
+          await handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, 1);
           break;
         }
         case "change_mode": {
@@ -841,10 +1108,26 @@ export function TutoringSession() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Check if user is confirming pending voice submission
+    if (pendingVoiceSubmission && /^(?:yes|confirm|submit|go|proceed)$/i.test(trimmed)) {
+      const opt = pendingVoiceSubmission.optionLetter;
+      setPendingVoiceSubmission(null);
+      await handleSubmitAnswer(opt);
+      return;
+    }
+
+    // Echo the user's message into conversation first so user sees their input immediately
+    const userMsgId = `user_${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: userMsgId, role: "user", text: trimmed, timestamp: new Date().toISOString() },
+    ]);
+
     // First: classify through voice command parser before initiating any note search
     const command = parseVoiceCommand(trimmed, {
       activeQuestion: currentQuestion,
       isQuestionAnswered: Boolean(latestEvaluation),
+      selectedOption,
     });
 
     if (command.type !== "unknown") {
@@ -852,8 +1135,14 @@ export function TutoringSession() {
       return;
     }
 
-    // Only non-commands search study notes for topic practice
-    await handleStartTopic(trimmed);
+    // In full-document mode, a free-form question should be answered in context,
+    // not interpreted as a request to restart the current section.
+    if (activeGoal === "full_document") {
+      await handleAskStudyQuestion(trimmed);
+    } else {
+      // Only non-commands search study notes for topic practice
+      await handleStartTopic(trimmed);
+    }
   };
 
   const handleExplainSimply = () => {
@@ -892,9 +1181,7 @@ export function TutoringSession() {
     fetchInitialState()
       .then((data) => {
         setMasteryList(data.masteryList);
-        if (traces.length > 0) {
-          setToolTraces((prev) => [...traces, ...prev]);
-        }
+        setToolTraces(traces);
       })
       .catch(() => {
         // Non-fatal
@@ -906,8 +1193,11 @@ export function TutoringSession() {
   );
 
   const isAiLive =
-    currentProvider === "llm" && Boolean(serverStatus?.reachable && serverStatus.provider?.configured);
-  const modelName = serverStatus?.reachable ? serverStatus.provider?.model || "Gemini" : "Gemini";
+    executionMetadata?.executionPath === "live_model" ||
+    (currentProvider === "llm" && Boolean(serverStatus?.reachable && serverStatus.provider?.configured && !executionMetadata));
+  const modelName =
+    executionMetadata?.model ||
+    (serverStatus?.reachable ? serverStatus.provider?.model || "gemini-3.8-flash" : "gemini-3.8-flash");
 
   return (
     <div className="flex flex-col h-full gap-3 overflow-hidden">
@@ -934,6 +1224,52 @@ export function TutoringSession() {
 
         {/* Status Chips, Active Material, & Rapid-Fire Trigger */}
         <div className="flex items-center gap-2.5">
+          {/* Learning Mode Switcher Pills */}
+          {isSessionActive && (
+            <div
+              className="flex items-center gap-1 bg-stone-950/80 p-0.5 rounded-xl border border-stone-800 text-xs"
+              role="tablist"
+              aria-label="Learning Modes"
+            >
+              {(["teach", "quiz", "weak", "full_document"] as LearningGoal[]).map((goal) => {
+                const isSelected = activeGoal === goal;
+                return (
+                  <button
+                    key={goal}
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelected}
+                    onClick={() => handleSwitchMode(goal)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                      isSelected
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm font-semibold"
+                        : "text-stone-400 hover:text-stone-200 hover:bg-stone-900 border border-transparent"
+                    }`}
+                    title={`Switch mode to ${GOAL_LABELS[goal].label}`}
+                  >
+                    <span aria-hidden="true">{GOAL_LABELS[goal].icon}</span>
+                    <span className="hidden sm:inline">{GOAL_LABELS[goal].label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Stop Speaking Voice Control */}
+          {voice.voiceState === "speaking" && (
+            <button
+              type="button"
+              onClick={() => voice.stopSpeaking()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/20 border border-rose-500/40 px-2.5 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/30 transition-all shadow-sm"
+              title="Stop speaking (Esc)"
+              aria-label="Stop tutor speaking"
+            >
+              <span className="size-2 rounded-full bg-rose-400 animate-ping" />
+              <span>Stop Speaking</span>
+              <kbd className="hidden sm:inline text-[9px] px-1 py-0.5 bg-stone-900/80 border border-rose-500/30 rounded text-rose-200">Esc</kbd>
+            </button>
+          )}
+
           {/* Active Material Badge */}
           {isSessionActive && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900 border border-stone-800 text-xs text-stone-300">
@@ -953,19 +1289,15 @@ export function TutoringSession() {
             </div>
           )}
 
-          {/* Active Learning Goal Badge */}
-          {isSessionActive && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900 border border-stone-800 text-xs text-stone-300">
-              <span className="text-amber-400 text-xs">{GOAL_LABELS[activeGoal]?.icon}</span>
-              <span className="text-[10px] text-stone-500 uppercase font-bold hidden sm:inline">Goal:</span>
-              <span className="font-semibold text-stone-200">
-                {GOAL_LABELS[activeGoal]?.label || activeGoal}
-              </span>
-            </div>
-          )}
-
           {/* Active Response Engine Badge */}
-          <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/80 border border-stone-800 text-xs text-stone-300">
+          <div
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-stone-900/80 border border-stone-800 text-xs text-stone-300"
+            title={
+              isAiLive
+                ? `Active Model: ${modelName} (${executionMetadata?.callCount ?? 1} tool calls)`
+                : `Engine: Deterministic Fallback (${executionMetadata?.fallbackReason || "Offline/local mode"})`
+            }
+          >
             <span className={`size-2 rounded-full ${isAiLive ? "bg-amber-400 animate-ping" : "bg-stone-500"}`} />
             <Activity className="size-3 text-amber-400" />
             <span className="font-medium text-[11px]">
@@ -1067,12 +1399,65 @@ export function TutoringSession() {
 
           {/* Center Column — Learning Stage */}
           <div className="lg:col-span-4 h-full flex flex-col min-h-0 gap-3.5 overflow-y-auto pr-0.5">
+            {/* Spoken Voice Confirmation Banner */}
+            {pendingVoiceSubmission && (
+              <div
+                data-testid="voice-transcript-confirmation"
+                className="rounded-xl border border-amber-500/40 bg-amber-950/30 p-3 flex flex-wrap items-center justify-between gap-2.5 shadow-md shrink-0"
+              >
+                <div className="flex items-center gap-2 text-xs text-amber-200">
+                  <span className="size-2 rounded-full bg-amber-400 animate-pulse" />
+                  <span>
+                    Voice heard: <strong>Option {pendingVoiceSubmission.optionLetter}</strong>{" "}
+                    <span className="text-stone-400 italic">(&ldquo;{pendingVoiceSubmission.rawTranscript}&rdquo;)</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const opt = pendingVoiceSubmission.optionLetter;
+                      setPendingVoiceSubmission(null);
+                      handleSubmitAnswer(opt);
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-amber-500 text-stone-950 text-xs font-bold hover:bg-amber-400 transition-colors shadow-sm"
+                  >
+                    Confirm & Submit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingVoiceSubmission(null);
+                      voice.startListening();
+                    }}
+                    className="px-2 py-1 rounded-md bg-stone-800 text-stone-300 text-xs hover:bg-stone-700 transition-colors"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingVoiceSubmission(null)}
+                    className="px-2 py-1 rounded-md text-stone-400 hover:text-stone-200 text-xs"
+                    aria-label="Dismiss voice confirmation"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
             <QuizCard
               key={currentQuestion?.questionId ?? "empty"}
               question={currentQuestion}
               evaluation={latestEvaluation}
               onSubmitAnswer={handleSubmitAnswer}
               onNextQuestion={handleNextQuestion}
+              onSkipQuestion={handleSkipQuestion}
+              onRepeatQuestion={handleRepeatActiveQuestion}
+              onExplainConcept={handleExplainSimply}
+              onGiveHint={handleGiveQuestionHint}
+              onRequestMultipleChoice={() => handleRequestQuestionFormat("multiple_choice")}
+              onRequestShortAnswer={() => handleRequestQuestionFormat("short_answer")}
               isLoading={isLoading}
               selectedOption={selectedOption}
               progressionMode={progressionMode}
@@ -1083,6 +1468,8 @@ export function TutoringSession() {
               evidence={currentEvidence}
               recoveryCitation={latestEvaluation?.recoveryCitation}
               activeDocumentTitle={activeDocumentTitle}
+              isAnswered={Boolean(latestEvaluation)}
+              activeGoal={activeGoal}
               onExplainSimply={handleExplainSimply}
               onGiveExample={handleGiveExample}
               onQuizMe={handleQuizMeOnEvidence}

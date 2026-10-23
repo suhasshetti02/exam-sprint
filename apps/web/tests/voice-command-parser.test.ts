@@ -69,6 +69,40 @@ describe("Voice Command Parser", () => {
     });
   });
 
+  it("routes a direct natural question as a question while a short-answer quiz is active", () => {
+    const parsed = parseVoiceCommand("What is computer graphics?", {
+      activeQuestion: sampleShortAnswer,
+    });
+    expect(parsed.type).toBe("ask_study_question");
+    if (parsed.type === "ask_study_question") {
+      expect(parsed.query).toBe("What is computer graphics?");
+    }
+  });
+
+  it("routes a quick topic overview away from active-answer grading", () => {
+    expect(parseVoiceCommand("Can you give me the quick cover of this topic?", {
+      activeQuestion: sampleShortAnswer,
+    })).toEqual({
+      type: "ask_study_question",
+      query: "Can you give me the quick cover of this topic?",
+    });
+  });
+
+  it("routes skip separately from I don't know and supports requested quiz formats", () => {
+    expect(parseVoiceCommand("Skip this question", { activeQuestion: sampleShortAnswer })).toEqual({ type: "skip_question" });
+    expect(parseVoiceCommand("I don't know", { activeQuestion: sampleShortAnswer })).toEqual({ type: "dont_know" });
+    expect(parseVoiceCommand("Quiz me with MCQs", { activeQuestion: sampleShortAnswer })).toEqual({
+      type: "start_quiz",
+      topic: undefined,
+      questionFormat: "multiple_choice",
+    });
+    expect(parseVoiceCommand("Quiz me with short answer", { activeQuestion: sampleShortAnswer })).toEqual({
+      type: "start_quiz",
+      topic: undefined,
+      questionFormat: "short_answer",
+    });
+  });
+
   describe("Study Navigation Commands", () => {
     it("parses 'Teach me 2NF'", () => {
       const res = parseVoiceCommand("Teach me 2NF");
@@ -89,6 +123,17 @@ describe("Voice Command Parser", () => {
       expect(parseVoiceCommand("Study the full document")).toEqual({ type: "study_full_document" });
     });
 
+    it("routes numbered section study requests as topics and preserves decimal titles", () => {
+      expect(parseVoiceCommand("Let's study section 12")).toEqual({
+        type: "teach_topic",
+        topic: "section 12",
+      });
+      expect(parseVoiceCommand("Study 1.1 The Three I's of Virtual Reality")).toEqual({
+        type: "teach_topic",
+        topic: "1.1 The Three I's of Virtual Reality",
+      });
+    });
+
     it("parses 'Repeat the question'", () => {
       expect(parseVoiceCommand("Repeat the question")).toEqual({ type: "repeat_question" });
       expect(parseVoiceCommand("Read it again")).toEqual({ type: "repeat_question" });
@@ -106,7 +151,7 @@ describe("Voice Command Parser", () => {
 
     it("parses 'I don't know'", () => {
       expect(parseVoiceCommand("I don't know")).toEqual({ type: "dont_know" });
-      expect(parseVoiceCommand("Skip this question")).toEqual({ type: "dont_know" });
+      expect(parseVoiceCommand("Skip this question")).toEqual({ type: "skip_question" });
     });
   });
 
@@ -216,6 +261,15 @@ describe("Voice Command Parser", () => {
         optionLetter: "A",
         originalChoiceText: "Partial dependencies",
       });
+    });
+
+    it("never interprets arbitrary words after option as answer labels", () => {
+      for (const transcript of ["Option study", "Option section 12", "I choose study", "study"]) {
+        const parsed = parseVoiceCommand(transcript, { activeQuestion: sampleMcq });
+        expect(parsed.type).toBe("ask_study_question");
+        expect(parsed.type).not.toBe("select_option");
+        expect(parsed.type).not.toBe("submit_answer");
+      }
     });
 
     it("normalizes speech recognition phonetic letter variants like 'Option ay' and 'Option bee'", () => {

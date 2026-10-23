@@ -47,9 +47,11 @@ class MockSpeechSynthesisUtterance {
 
 describe("useVoice hook", () => {
   let mockRecognitionInstances: MockSpeechRecognition[] = [];
+  let mockUtterances: MockSpeechSynthesisUtterance[] = [];
 
   beforeEach(() => {
     mockRecognitionInstances = [];
+    mockUtterances = [];
 
     const MockRecognitionConstructor = vi.fn(function () {
       const inst = new MockSpeechRecognition();
@@ -61,9 +63,12 @@ describe("useVoice hook", () => {
     vi.stubGlobal("SpeechSynthesisUtterance", MockSpeechSynthesisUtterance);
     vi.stubGlobal("speechSynthesis", {
       speak: vi.fn((utt: MockSpeechSynthesisUtterance) => {
+        mockUtterances.push(utt);
         utt.onstart?.();
       }),
       cancel: vi.fn(),
+      paused: false,
+      resume: vi.fn(),
     });
   });
 
@@ -256,5 +261,76 @@ describe("useVoice hook", () => {
 
     expect(result.current.voiceState).toBe("disabled");
     expect(result.current.wakeWordEnabled).toBe(false);
+  });
+
+  it("handles a duplicate final recognition event once but accepts a later intentional repeat", async () => {
+    const onCommand = vi.fn();
+    const { result } = renderHook(() => useVoice({ onCommand }));
+    act(() => result.current.startListening());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+
+    const recognition = mockRecognitionInstances[0]!;
+    const final = (transcript: string) => Object.assign([{ transcript }], { isFinal: true });
+    const firstEvent = { resultIndex: 0, results: [final("repeat the question")] };
+    await act(async () => {
+      recognition.onresult?.(firstEvent);
+      recognition.onresult?.(firstEvent);
+      await Promise.resolve();
+    });
+    expect(onCommand).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      recognition.onresult?.({
+        resultIndex: 1,
+        results: [final("older result"), final("repeat the question")],
+      });
+      await Promise.resolve();
+    });
+    expect(onCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it("speaks an identical active response once and permits the same text after completion", () => {
+    const { result } = renderHook(() => useVoice());
+    act(() => result.current.setVoiceOutputEnabled(true));
+    act(() => {
+      result.current.speak("Repeating question: What is virtual reality?");
+      result.current.speak("Repeating question: What is virtual reality?");
+    });
+    expect(mockUtterances).toHaveLength(1);
+
+    act(() => mockUtterances[0]!.onend?.());
+    act(() => result.current.speak("Repeating question: What is virtual reality?"));
+    expect(mockUtterances).toHaveLength(2);
+  });
+
+  it("does not restart recognition after Stop Voice", async () => {
+    const { result } = renderHook(() => useVoice());
+    act(() => result.current.setWakeWordEnabled(true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    const recognition = mockRecognitionInstances[0]!;
+    expect(mockRecognitionInstances).toHaveLength(1);
+
+    act(() => result.current.stopListening());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+
+    expect(recognition.abort).toHaveBeenCalled();
+    expect(mockRecognitionInstances).toHaveLength(1);
+    expect(result.current.voiceState).toBe("disabled");
+  });
+
+  it("rearms hands-free listening after speech finishes", async () => {
+    const { result } = renderHook(() => useVoice());
+    act(() => {
+      result.current.setVoiceOutputEnabled(true);
+      result.current.setWakeWordEnabled(true);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+
+    act(() => result.current.speak("A completed tutor response."));
+    act(() => mockUtterances[0]!.onend?.());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+
+    expect(mockRecognitionInstances.length).toBeGreaterThan(1);
+    expect(result.current.voiceState).toBe("wake_listening");
   });
 });

@@ -126,7 +126,7 @@ describe("Milestone 5: Learning Quality, Mastery Integrity, and 'Don't Know' Jou
 
     const answer =
       q1nf.kind === "multiple_choice"
-        ? "A"
+        ? (q1nf.questionId === "q-1nf-2" ? "D" : "A")
         : "every column holds a single atomic value and there are no repeating groups of columns";
 
     // Submit correct answer for q1nf

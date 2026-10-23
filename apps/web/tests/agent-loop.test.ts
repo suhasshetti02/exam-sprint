@@ -470,7 +470,7 @@ describe("Milestone 4: LLM-Assisted Agent Orchestration", () => {
         new OpenAiCompatibleProvider({
           apiKey: "sk-openai-test-key-12345",
           baseUrl: "https://api.openai.com/v1",
-          model: "gemini-2.5-flash",
+          model: "gemini-3.8-flash",
         });
       }).toThrow(/Incompatible LLM configuration/);
     });

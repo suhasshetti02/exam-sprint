@@ -90,14 +90,14 @@
     "kind": "multiple_choice",
     "prompt": "What is the closure of an attribute set X in relational database theory?",
     "choices": [
-      "A. Every attribute that X determines, directly or through other dependencies",
+      "A. The total count of tuples in the relation that share attribute X",
       "B. Only the attributes that form a composite foreign key referencing X",
-      "C. The total count of tuples in the relation that share attribute X",
+      "C. Every attribute that X determines, directly or through other dependencies",
       "D. The set of all attributes that have no functional dependency on X"
     ],
     "expected": {
       "kind": "multiple_choice",
-      "correctAnswer": "A",
+      "correctAnswer": "C",
       "explanation": "The closure of an attribute set X is every attribute that X determines, directly or through other dependencies."
     },
     "evidenceChunkId": "dbms-normalization#functional-dependencies",
@@ -133,14 +133,14 @@
     "kind": "multiple_choice",
     "prompt": "Which table design violates first normal form (1NF)?",
     "choices": [
-      "A. A table where a column contains comma-separated lists of phone numbers (repeating groups)",
+      "A. A table containing a foreign key referencing an external table",
       "B. A table where a non-key column depends on another non-key column",
       "C. A table where a non-key attribute depends on part of a composite primary key",
-      "D. A table containing a foreign key referencing an external table"
+      "D. A table where a column contains comma-separated lists of phone numbers (repeating groups)"
     ],
     "expected": {
       "kind": "multiple_choice",
-      "correctAnswer": "A",
+      "correctAnswer": "D",
       "misconceptions": [
         {
           "choiceLetter": "B",
@@ -248,17 +248,17 @@
     "kind": "multiple_choice",
     "prompt": "When is a table in third normal form (3NF)?",
     "choices": [
-      "A. When it is in second normal form and no non-key attribute depends on another non-key attribute",
-      "B. When every column holds a single atomic value and there are no repeating groups",
+      "A. When every column holds a single atomic value and there are no repeating groups",
+      "B. When it is in second normal form and no non-key attribute depends on another non-key attribute",
       "C. When every non-trivial functional dependency has a superkey on the left",
       "D. When no table contains nullable columns"
     ],
     "expected": {
       "kind": "multiple_choice",
-      "correctAnswer": "A",
+      "correctAnswer": "B",
       "misconceptions": [
         {
-          "choiceLetter": "B",
+          "choiceLetter": "A",
           "label": "confuses-3nf-with-1nf",
           "explanation": "Single atomic values and no repeating groups is the definition of 1NF."
         },
@@ -309,14 +309,14 @@
     "kind": "multiple_choice",
     "prompt": "Under what condition is a table in Boyce-Codd normal form (BCNF)?",
     "choices": [
-      "A. When, for every non-trivial functional dependency X -> Y, X is a superkey",
+      "A. When all transactions commit with serializable isolation",
       "B. When every non-key column depends on only part of a candidate key",
-      "C. When all transactions commit with serializable isolation",
+      "C. When, for every non-trivial functional dependency X -> Y, X is a superkey",
       "D. When no composite keys exist in the relation"
     ],
     "expected": {
       "kind": "multiple_choice",
-      "correctAnswer": "A",
+      "correctAnswer": "C",
       "explanation": "A table is in Boyce-Codd normal form (BCNF) when, for every non-trivial functional dependency X -> Y, X is a superkey."
     },
     "evidenceChunkId": "dbms-normalization#boyce-codd-normal-form",
@@ -358,14 +358,14 @@
     "kind": "multiple_choice",
     "prompt": "What does the Atomicity property guarantee in ACID database transactions?",
     "choices": [
-      "A. All of a transaction's changes are applied or none are",
+      "A. Non-repeatable reads are completely eliminated",
       "B. Once committed, data survives a system crash",
       "C. Transactions execute sequentially without interleaving",
-      "D. Non-repeatable reads are completely eliminated"
+      "D. All of a transaction's changes are applied or none are"
     ],
     "expected": {
       "kind": "multiple_choice",
-      "correctAnswer": "A",
+      "correctAnswer": "D",
       "misconceptions": [
         {
           "choiceLetter": "B",

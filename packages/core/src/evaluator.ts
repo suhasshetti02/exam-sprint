@@ -52,6 +52,28 @@ export function hasNegation(text: string): boolean {
   return words.some((w) => negationWords.has(w));
 }
 
+function canonicalContentTerms(text: string): Set<string> {
+  const aliases: Record<string, string> = {
+    pictures: "image", picture: "image", images: "image", visuals: "visual", visual: "visual",
+    shows: "display", show: "display", displayed: "display", displaying: "display",
+    generates: "create", generated: "create", generating: "create", creates: "create", creating: "create", makes: "create", make: "create",
+    computers: "computer", uses: "use", using: "use", manipulates: "manipulate", manipulating: "manipulate",
+  };
+  const stopWords = new Set(["the", "a", "an", "is", "are", "was", "were", "be", "to", "of", "and", "or", "in", "on", "for", "by", "with", "that", "this", "it", "as", "at", "from", "when", "each", "every", "according", "notes"]);
+  return new Set(cleanText(text).split(/\s+/)
+    .filter((term) => term.length > 2 && !stopWords.has(term))
+    .map((term) => aliases[term] || term.replace(/s$/, "")));
+}
+
+function isMeaningEquivalent(student: string, expected: string): boolean {
+  if (!student || !expected || hasNegation(student) || hasNegation(expected)) return false;
+  const expectedTerms = canonicalContentTerms(expected);
+  const studentTerms = canonicalContentTerms(student);
+  if (expectedTerms.size < 3) return false;
+  const matchedTerms = [...expectedTerms].filter((term) => studentTerms.has(term)).length;
+  return matchedTerms >= 3 && matchedTerms / expectedTerms.size >= 0.4;
+}
+
 /**
  * Parses multiple-choice answers, extracting choice letters (A, B, C, D)
  * from explicit selections like "B", "b", "Option B", "Choice B.", or matching full choice text.
@@ -271,7 +293,12 @@ export class DeterministicAnswerEvaluator {
           !studentHasNegation &&
           acceptable.some((v) => !hasNegation(v) && v.length >= 6 && normStudent.includes(v));
 
-        if (isExactMatch || isSubstringAccepted) {
+        // Accept concise paraphrases when they preserve most of the source's
+        // distinctive concepts. Negation remains excluded above to protect
+        // answers that reverse the meaning.
+        const isMeaningMatch = isMeaningEquivalent(trimmedAnswer, question.expected.correctAnswer || "");
+
+        if (isExactMatch || isSubstringAccepted || isMeaningMatch) {
           verdict = "correct";
           explanation = question.expected.explanation;
         } else if (studentHasNegation && !expectedHasNegation) {

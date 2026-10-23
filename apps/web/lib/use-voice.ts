@@ -36,7 +36,7 @@ export type VoiceState =
 
 export interface UseVoiceOptions {
   onTranscript?: (transcript: string, isFinal: boolean) => void;
-  onCommand?: (command: VoiceCommand, rawTranscript: string) => void;
+  onCommand?: (command: VoiceCommand, rawTranscript: string) => void | Promise<void>;
   onError?: (errorMessage: string) => void;
   onSpeechEnd?: () => void;
   context?: CommandParserContext;
@@ -118,10 +118,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const isProcessingRef = useRef(false);
   const isCommandListeningRef = useRef(false);
   const lastSpokenTextRef = useRef<string | null>(null);
+  const activeSpeechTextRef = useRef<string | null>(null);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const optionsRef = useRef(options);
   const commandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSubmittedKeyRef = useRef<string | null>(null);
-  const lastSubmittedTimeRef = useRef<number>(0);
+  const processedFinalEventsRef = useRef<WeakMap<IWindowSpeechRecognition, Set<string>>>(new WeakMap());
   const hasPermissionErrorRef = useRef(false);
 
   const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
@@ -138,13 +139,23 @@ export function useVoice(options: UseVoiceOptions = {}) {
   useEffect(() => {
     const activeUtterances = activeUtterancesRef.current;
     return () => {
+      isManuallyStoppedRef.current = true;
+      wakeWordEnabledRef.current = false;
+      isSpeakingRef.current = false;
+      isProcessingRef.current = false;
       if (commandTimeoutRef.current) clearTimeout(commandTimeoutRef.current);
+      activeUtteranceRef.current = null;
+      activeSpeechTextRef.current = null;
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
       activeUtterances.clear();
       if (recognitionRef.current) {
         try {
+          recognitionRef.current.onstart = null;
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onend = null;
           recognitionRef.current.abort();
         } catch {
           // Non-fatal
@@ -155,12 +166,20 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   const stopSpeaking = useCallback(() => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      activeUtteranceRef.current = null;
+      activeSpeechTextRef.current = null;
       window.speechSynthesis.cancel();
       activeUtterancesRef.current.clear();
       isSpeakingRef.current = false;
-      setVoiceState((prev) =>
-        prev === "speaking" ? (wakeWordEnabledRef.current ? "wake_listening" : "disabled") : prev,
-      );
+      isProcessingRef.current = false;
+      setVoiceState("disabled");
+      if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current) {
+        setTimeout(() => {
+          if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current && !isSpeakingRef.current) {
+            startWakeListeningRef.current();
+          }
+        }, 350);
+      }
     }
   }, []);
 
@@ -183,28 +202,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       try {
         if (typeof window !== "undefined" && "speechSynthesis" in window) {
-          // Suspend speech recognition during text-to-speech to avoid audio feedback
-          isSpeakingRef.current = true;
-          if (recognitionRef.current) {
-            try {
-              recognitionRef.current.onend = null;
-              recognitionRef.current.onerror = null;
-              recognitionRef.current.abort();
-            } catch {
-              // Non-fatal
-            }
-          }
-
-          if (window.speechSynthesis.paused) {
-            try {
-              window.speechSynthesis.resume();
-            } catch {
-              // Non-fatal
-            }
-          }
-          window.speechSynthesis.cancel();
-          activeUtterancesRef.current.clear();
-
           // Strip markdown symbols and internal link artifacts for natural speech output
           const cleanText = text
             .replace(/[*_#`~]/g, "")
@@ -214,7 +211,39 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
           if (!cleanText) return;
 
+          // API handlers and ConversationPanel both announce some messages. Ignore
+          // only an identical utterance that is still active; a later intentional
+          // repeat remains speakable after the active utterance ends.
+          if (isSpeakingRef.current && activeSpeechTextRef.current === cleanText) return;
+
+          // Suspend recognition during TTS to avoid feeding tutor audio back as input.
+          isSpeakingRef.current = true;
+          activeSpeechTextRef.current = cleanText;
+          activeUtteranceRef.current = null;
+          if (recognitionRef.current) {
+            try {
+              recognitionRef.current.onresult = null;
+              recognitionRef.current.onend = null;
+              recognitionRef.current.onerror = null;
+              recognitionRef.current.abort();
+            } catch {
+              // Non-fatal
+            }
+          }
+
+          window.speechSynthesis.cancel();
+          activeUtterancesRef.current.clear();
+
+          if (window.speechSynthesis.paused) {
+            try {
+              window.speechSynthesis.resume();
+            } catch {
+              // Non-fatal
+            }
+          }
+
           const utterance = new SpeechSynthesisUtterance(cleanText);
+          activeUtteranceRef.current = utterance;
           activeUtterancesRef.current.add(utterance);
           utterance.lang = "en-US";
           utterance.rate = 1.0;
@@ -226,12 +255,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
           };
 
           const handleSpeechEnd = () => {
+            if (activeUtteranceRef.current !== utterance) return;
             activeUtterancesRef.current.delete(utterance);
+            activeUtteranceRef.current = null;
+            activeSpeechTextRef.current = null;
             isSpeakingRef.current = false;
             isProcessingRef.current = false;
             if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current) {
               setVoiceState("wake_listening");
-              startWakeListeningRef.current();
+              setTimeout(() => {
+                if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current && !isSpeakingRef.current) {
+                  startWakeListeningRef.current();
+                }
+              }, 350);
             } else {
               setVoiceState("disabled");
             }
@@ -247,6 +283,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
       } catch {
         isSpeakingRef.current = false;
         isProcessingRef.current = false;
+        activeSpeechTextRef.current = null;
+        activeUtteranceRef.current = null;
         setVoiceState(wakeWordEnabledRef.current ? "wake_listening" : "disabled");
       }
     },
@@ -254,6 +292,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   );
 
   const startWakeListening = useCallback(() => {
+    if (isManuallyStoppedRef.current) return;
     if (!isSupported) {
       setVoiceState("unsupported");
       return;
@@ -277,6 +316,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (!recognition) return;
 
     recognitionRef.current = recognition;
+    processedFinalEventsRef.current.set(recognition, new Set());
     isManuallyStoppedRef.current = false;
     isSpeakingRef.current = false;
     isProcessingRef.current = false;
@@ -290,6 +330,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     };
 
     recognition.onresult = (event: unknown) => {
+      if (recognitionRef.current !== recognition || isManuallyStoppedRef.current) return;
       const speechEvent = event as {
         resultIndex: number;
         results: Array<Array<{ transcript: string }> & { isFinal?: boolean }>;
@@ -300,10 +341,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       for (let i = speechEvent.resultIndex; i < speechEvent.results.length; i++) {
         const res = speechEvent.results[i];
-        if (res && res[0]) {
-          fullTranscript += res[0].transcript;
-          if (res.isFinal) isFinal = true;
+        if (res) {
+          if (res[0]) {
+            fullTranscript += res[0].transcript;
+          }
+          if (res.isFinal || (res as unknown as { isFinal?: boolean }).isFinal) {
+            isFinal = true;
+          }
         }
+      }
+      if ((speechEvent.results as unknown as { isFinal?: boolean })?.isFinal) {
+        isFinal = true;
       }
 
       const trimmed = fullTranscript.trim();
@@ -358,13 +406,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
           wakeWordEnabledRef.current = false;
           if (recognitionRef.current) {
             try {
+              recognitionRef.current.onresult = null;
               recognitionRef.current.abort();
             } catch {
               // Non-fatal
             }
           }
           if (typeof window !== "undefined" && "speechSynthesis" in window) {
+            activeUtteranceRef.current = null;
+            activeSpeechTextRef.current = null;
             window.speechSynthesis.cancel();
+            activeUtterancesRef.current.clear();
           }
           setVoiceState("disabled");
           setCurrentTranscript("");
@@ -372,27 +424,36 @@ export function useVoice(options: UseVoiceOptions = {}) {
           return;
         }
 
-        // Process command on final speech result or recognized unambiguous command
-        if (isFinal || command.type === "select_option" || command.type === "repeat_question" || command.type === "give_hint") {
-          const qId = optionsRef.current.context?.activeQuestion?.questionId ?? "no-q";
-          const submissionKey = `${qId}_${command.type}_${targetText.toLowerCase()}`;
+        // Strictly reject interim recognition results from submitting options or executing commands
+        if (!isFinal) {
+          return;
+        }
 
-          if (
-            lastSubmittedKeyRef.current === submissionKey &&
-            Date.now() - lastSubmittedTimeRef.current < 2500
-          ) {
-            // Reject duplicate speech recognition final event
-            return;
-          }
-
-          lastSubmittedKeyRef.current = submissionKey;
-          lastSubmittedTimeRef.current = Date.now();
+        {
+          const eventKey = `${speechEvent.resultIndex}:${targetText.toLowerCase()}`;
+          const processedEvents = processedFinalEventsRef.current.get(recognition) ?? new Set<string>();
+          processedFinalEventsRef.current.set(recognition, processedEvents);
+          if (processedEvents.has(eventKey)) return;
+          processedEvents.add(eventKey);
 
           isCommandListeningRef.current = false;
           setVoiceState("processing");
           isProcessingRef.current = true;
 
-          optionsRef.current.onCommand?.(command, targetText);
+          const commandResult = optionsRef.current.onCommand?.(command, targetText);
+          void Promise.resolve(commandResult).catch(() => undefined).finally(() => {
+            if (isManuallyStoppedRef.current || isSpeakingRef.current) return;
+            isProcessingRef.current = false;
+            if (wakeWordEnabledRef.current && !hasPermissionErrorRef.current) {
+              setTimeout(() => {
+                if (wakeWordEnabledRef.current && !isManuallyStoppedRef.current && !isSpeakingRef.current && !isProcessingRef.current) {
+                  startWakeListeningRef.current();
+                }
+              }, 350);
+            } else {
+              setVoiceState("disabled");
+            }
+          });
         }
       }
     };
@@ -474,6 +535,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
   }, [createRecognitionInstance, isSupported]);
 
   useEffect(() => {
+    // Keep the current recognizer callback available to speech lifecycle handlers.
+    // eslint-disable-next-line react-hooks/immutability
     startWakeListeningRef.current = startWakeListening;
   }, [startWakeListening]);
 
@@ -503,6 +566,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (!recognition) return;
 
     recognitionRef.current = recognition;
+    processedFinalEventsRef.current.set(recognition, new Set());
     isManuallyStoppedRef.current = false;
     isSpeakingRef.current = false;
     isProcessingRef.current = false;
@@ -517,6 +581,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     };
 
     recognition.onresult = (event: unknown) => {
+      if (recognitionRef.current !== recognition || isManuallyStoppedRef.current) return;
       const speechEvent = event as {
         resultIndex: number;
         results: Array<Array<{ transcript: string }> & { isFinal?: boolean }>;
@@ -527,10 +592,17 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       for (let i = speechEvent.resultIndex; i < speechEvent.results.length; i++) {
         const res = speechEvent.results[i];
-        if (res && res[0]) {
-          transcript += res[0].transcript;
-          if (res.isFinal) isFinal = true;
+        if (res) {
+          if (res[0]) {
+            transcript += res[0].transcript;
+          }
+          if (res.isFinal || (res as unknown as { isFinal?: boolean }).isFinal) {
+            isFinal = true;
+          }
         }
+      }
+      if ((speechEvent.results as unknown as { isFinal?: boolean })?.isFinal) {
+        isFinal = true;
       }
 
       if (transcript) {
@@ -538,26 +610,24 @@ export function useVoice(options: UseVoiceOptions = {}) {
         optionsRef.current.onTranscript?.(transcript, isFinal);
 
         if (isFinal) {
+          const eventKey = `${speechEvent.resultIndex}:${transcript.trim().toLowerCase()}`;
+          const processedEvents = processedFinalEventsRef.current.get(recognition) ?? new Set<string>();
+          processedFinalEventsRef.current.set(recognition, processedEvents);
+          if (processedEvents.has(eventKey)) return;
+          processedEvents.add(eventKey);
+
           setVoiceState("processing");
           isProcessingRef.current = true;
           const { remainingCommand } = extractWakePhraseAndCommand(transcript);
           const commandText = remainingCommand.trim() || transcript.trim();
           const command = parseVoiceCommand(commandText, optionsRef.current.context);
 
-          const qId = optionsRef.current.context?.activeQuestion?.questionId ?? "no-q";
-          const submissionKey = `${qId}_${command.type}_${commandText.toLowerCase()}`;
-
-          if (
-            lastSubmittedKeyRef.current === submissionKey &&
-            Date.now() - lastSubmittedTimeRef.current < 2500
-          ) {
-            return;
-          }
-
-          lastSubmittedKeyRef.current = submissionKey;
-          lastSubmittedTimeRef.current = Date.now();
-
-          optionsRef.current.onCommand?.(command, commandText);
+          const commandResult = optionsRef.current.onCommand?.(command, commandText);
+          void Promise.resolve(commandResult).catch(() => undefined).finally(() => {
+            if (isManuallyStoppedRef.current || isSpeakingRef.current) return;
+            isProcessingRef.current = false;
+            setVoiceState("disabled");
+          });
         }
       }
     };
@@ -615,12 +685,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     isManuallyStoppedRef.current = true;
     wakeWordEnabledRef.current = false;
     isSpeakingRef.current = false;
+    activeSpeechTextRef.current = null;
+    activeUtteranceRef.current = null;
     isProcessingRef.current = false;
     isCommandListeningRef.current = false;
 
     if (commandTimeoutRef.current) clearTimeout(commandTimeoutRef.current);
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
+      activeUtterancesRef.current.clear();
     }
     if (recognitionRef.current) {
       try {
@@ -640,12 +713,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     isManuallyStoppedRef.current = true;
     wakeWordEnabledRef.current = false;
     isSpeakingRef.current = false;
+    activeSpeechTextRef.current = null;
+    activeUtteranceRef.current = null;
     isProcessingRef.current = false;
     isCommandListeningRef.current = false;
 
     if (commandTimeoutRef.current) clearTimeout(commandTimeoutRef.current);
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
+      activeUtterancesRef.current.clear();
     }
     if (recognitionRef.current) {
       try {
@@ -666,6 +742,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     (enabled: boolean) => {
       if (enabled) {
         hasPermissionErrorRef.current = false;
+        isManuallyStoppedRef.current = false;
       }
       setWakeWordEnabledState(enabled);
       wakeWordEnabledRef.current = enabled;

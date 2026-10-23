@@ -18,6 +18,7 @@ export type VoiceIntent =
   | "SUBMIT_ANSWER"
   | "START_QUIZ"
   | "NEXT_QUESTION"
+  | "SKIP_QUESTION"
   | "PREVIOUS_QUESTION"
   | "REPEAT_QUESTION"
   | "READ_OPTIONS"
@@ -44,6 +45,7 @@ export interface IntentArgs {
   target?: "why" | "why_wrong" | "why_correct" | "general";
   query?: string;
   conceptId?: string;
+  questionFormat?: "multiple_choice" | "short_answer";
 }
 
 export interface IntentClassification {
@@ -60,8 +62,9 @@ export interface IntentClassification {
 export type VoiceCommand =
   | { type: "select_option"; optionLetter: "A" | "B" | "C" | "D" | "E"; originalChoiceText?: string; isChange?: boolean }
   | { type: "submit_answer"; answerText: string }
-  | { type: "start_quiz"; topic?: string }
+  | { type: "start_quiz"; topic?: string; questionFormat?: "multiple_choice" | "short_answer" }
   | { type: "next_question" }
+  | { type: "skip_question" }
   | { type: "previous_question" }
   | { type: "repeat_question" }
   | { type: "read_options" }
@@ -72,7 +75,7 @@ export type VoiceCommand =
   | { type: "request_example" }
   | { type: "simplify_explanation" }
   | { type: "teach_topic"; topic: string }
-  | { type: "quiz_topic"; topic: string }
+  | { type: "quiz_topic"; topic: string; questionFormat?: "multiple_choice" | "short_answer" }
   | { type: "review_weak" }
   | { type: "study_full_document" }
   | { type: "pause" }
@@ -238,10 +241,22 @@ export function classifyIntent(
   // 2. Quiz Progression & Navigation
   if (
     /^(?:next\s+question|go\s+to\s+next\s+question|next\s+one|next|advance|continue|move\s+on)$/i.test(normalized) ||
+    /^(?:ask\s+me\s+another\s+question|another\s+question|give\s+me\s+another\s+question)$/i.test(normalized) ||
     /^next\s+question\s+please$/i.test(normalized)
   ) {
     return {
       intent: "NEXT_QUESTION",
+      confidence: 0.98,
+      needsClarification: false,
+      questionId: context.activeQuestion?.questionId,
+      rawTranscript,
+    };
+  }
+
+  if (/^(?:please\s+)?(?:skip|pass)(?:\s+(?:this|the|current))?\s+question(?:\s+please)?$/i.test(normalized) ||
+    /^(?:please\s+)?skip(?:\s+it)?(?:\s+please)?$/i.test(normalized)) {
+    return {
+      intent: "SKIP_QUESTION",
       confidence: 0.98,
       needsClarification: false,
       questionId: context.activeQuestion?.questionId,
@@ -290,7 +305,6 @@ export function classifyIntent(
   if (
     /^(?:i\s+)?don'?t\s+know(?:\s+(?:the\s+)?answer)?$/i.test(normalized) ||
     /^(?:i\s+have\s+)?no\s+idea$/i.test(normalized) ||
-    /^(?:skip|pass)(?:\s+(?:this|the)\s+question)?$/i.test(normalized) ||
     /^not\s+sure$/i.test(normalized)
   ) {
     return {
@@ -303,7 +317,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:why\s+was\s+my\s+answer\s+(?:wrong|incorrect)|why\s+did\s+i\s+get\s+that\s+wrong|why\s+is\s+that\s+(?:wrong|incorrect))$/i.test(normalized)
+    /^(?:why\s+was\s+my\s+answer\s+(?:wrong|incorrect)|why\s+did\s+i\s+get\s+that\s+wrong|why\s+is\s+that\s+(?:wrong|incorrect)|explain\s+(?:my\s+)?(?:mistake|error)|what\s+did\s+i\s+do\s+wrong|why\s+am\s+i\s+wrong)$/i.test(normalized)
   ) {
     return {
       intent: "EXPLAIN_ANSWER",
@@ -327,6 +341,18 @@ export function classifyIntent(
   }
 
   if (
+    /^(?:why\s+is\s+(?:this|it|that)\s+(?:the\s+)?(?:correct|right)(?:\s+answer)?|why\s+is\s+this\s+correct|why\s+is\s+it\s+correct)$/i.test(normalized)
+  ) {
+    return {
+      intent: "EXPLAIN_ANSWER",
+      confidence: 0.95,
+      args: { target: "why_correct" },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  if (
     /^(?:why(?:\s+is\s+that)?|explain\s+(?:that|this)?\s+again|explain\s+why|repeat\s+(?:the\s+)?explanation|why\s+though)$/i.test(normalized)
   ) {
     return {
@@ -339,7 +365,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:explain(?:\s+this)?(?:\s+topic)?\s+more\s+simply|in\s+simple\s+terms|simpler\s+please|simplify(?:\s+this)?|eli5|explain\s+like\s+i'm\s+five)$/i.test(
+    /^(?:explain(?:\s+this)?(?:\s+topic)?\s+more\s+simply|explain\s+more\s+simply|explain\s+(?:this\s+)?(?:topic\s+)?simply|in\s+simple\s+terms|simpler\s+please|simplify(?:\s+this)?|make\s+it\s+simpler|explain\s+simpler|eli5|explain\s+like\s+i'm\s+five)$/i.test(
       normalized,
     )
   ) {
@@ -352,7 +378,7 @@ export function classifyIntent(
   }
 
   if (
-    /^(?:give(?:\s+me)?\s+(?:an\s+)?example|can\s+you\s+give\s+(?:an\s+)?example|provide\s+(?:an\s+)?example|example\s+please)$/i.test(
+    /^(?:give(?:\s+me)?\s+(?:an\s+|another\s+)?example|can\s+you\s+give\s+(?:an\s+|another\s+)?example|provide\s+(?:an\s+|another\s+)?example|another\s+example|example\s+please)$/i.test(
       normalized,
     )
   ) {
@@ -360,6 +386,19 @@ export function classifyIntent(
       intent: "REQUEST_EXAMPLE",
       confidence: 0.95,
       needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  if (/^(?:(?:can|could)\s+you\s+)?(?:give\s+me\s+)?(?:(?:a|the)\s+)?(?:quick\s+)?(?:overview|cover|summary)(?:\s+of\s+(?:this|the|that)\s+topic)?\??$/i.test(normalized) ||
+    /^(?:(?:can|could)\s+you\s+)?(?:give\s+me\s+)?(?:(?:a|the)\s+)?quick\s+cover\s+of\s+(?:this|the|that)\s+topic\??$/i.test(normalized) ||
+    /^(?:teach\s+me\s+from\s+scratch|start\s+from\s+the\s+beginning)$/i.test(normalized)) {
+    return {
+      intent: "ASK_STUDY_QUESTION",
+      confidence: 0.97,
+      args: { query: rawTranscript },
+      needsClarification: false,
+      questionId: context.activeQuestion?.questionId,
       rawTranscript,
     };
   }
@@ -456,9 +495,9 @@ export function classifyIntent(
 
   // 7. Explicit Option Selection
   const optionRegex =
-    /^(?:lock\s+in|i\s+choose|select|choose|pick|submit|mark|go\s+with|my\s+answer\s+is|answer\s+is|answer)\s*(?:option|choice|letter|answer)?\s*([a-z]+)\b/i;
-  const optionPrefixRegex = /^(?:option|choice|letter)\s*([a-z]+)\b/i;
-  const standaloneLetterRegex = /^(?:it\s+is\s+|it's\s+)?([a-z]+)$/i;
+    /^(?:lock\s+in|i\s+choose|select|choose|pick|submit|mark|go\s+with|my\s+answer\s+is|answer\s+is|answer)\s*(?:option|choice|letter|answer)?\s*(a|b|c|d|e|ay|eh|bee|be|see|sea|dee)\b/i;
+  const optionPrefixRegex = /^(?:option|choice|letter)\s*(a|b|c|d|e|ay|eh|bee|be|see|sea|dee)\b/i;
+  const standaloneLetterRegex = /^(?:it\s+is\s+|it's\s+)?(a|b|c|d|e|ay|eh|bee|be|see|sea|dee)$/i;
 
   const optionMatch =
     normalized.match(optionRegex) ||
@@ -518,6 +557,30 @@ export function classifyIntent(
     }
   }
 
+  // An explicit but unsupported option phrase is not an answer. Keep it in
+  // the conversation path instead of passing it to answer evaluation.
+  const unsupportedOptionPhrase = normalized.match(
+    /^(?:(?:lock\s+in|i\s+choose|select|choose|pick|submit|mark|go\s+with|my\s+answer\s+is|answer\s+is|answer)\s*(?:option|choice|letter|answer)?|option|choice|letter)\s+([a-z]+)\b/i,
+  );
+  if (unsupportedOptionPhrase?.[1]?.length === 1) {
+    return {
+      intent: "CLARIFY",
+      confidence: 0.9,
+      needsClarification: true,
+      clarificationPrompt: "That option is not available for this question. Please choose one of the displayed options, or ask a study question.",
+      rawTranscript,
+    };
+  }
+  if (unsupportedOptionPhrase) {
+    return {
+      intent: "ASK_STUDY_QUESTION",
+      confidence: 0.8,
+      args: { query: remainingCommand || rawTranscript },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
   // 8. Explicit Submit Answer
   if (/^(?:submit(?:\s+my)?\s+answer|submit)$/i.test(normalized)) {
     if (context.selectedOption) {
@@ -541,6 +604,18 @@ export function classifyIntent(
   }
 
   // 9. Start Quiz
+  const formatRequest = normalized.match(/^(?:quiz\s+me|give\s+me|ask\s+me)?\s*(?:with\s+)?(mcq|mcqs|multiple\s+choice|short\s+answer)(?:\s+(?:questions?|quiz))?(?:\s+(?:on|about)\s+(.+))?$/i);
+  if (formatRequest) {
+    const questionFormat = /short/i.test(formatRequest[1] || "") ? "short_answer" : "multiple_choice";
+    return {
+      intent: "START_QUIZ",
+      confidence: 0.98,
+      args: { questionFormat, topic: formatRequest[2]?.trim() },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
   if (/^(?:start(?:\s+a)?\s+quiz|quiz\s+me|test\s+me|let's\s+do\s+a\s+quiz)$/i.test(normalized)) {
     return {
       intent: "START_QUIZ",
@@ -566,7 +641,18 @@ export function classifyIntent(
     };
   }
 
-  // 11. Teach / Quiz specific topic
+  // 11. Next topic / Change topic
+  if (/^(?:next\s+topic|change\s+topic|switch\s+topic|move\s+to\s+next\s+topic)$/i.test(normalized)) {
+    return {
+      intent: "CHANGE_TOPIC",
+      confidence: 0.98,
+      args: { topic: "next" },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  // 12. Teach / Quiz specific topic
   const teachMatch = normalized.match(/^(?:teach|explain|tell)\s+(?:me\s+)?(?:about\s+)?([a-z0-9\s-]+)$/i);
   if (teachMatch && teachMatch[1]) {
     const topic = teachMatch[1].trim();
@@ -593,6 +679,35 @@ export function classifyIntent(
         rawTranscript,
       };
     }
+  }
+
+  // Explicit section study requests are topic navigation, even when their
+  // numeric identifier resembles an answer choice (for example, section 1.1).
+  const originalStudyRequest = remainingCommand || rawTranscript;
+  const studyRequest = originalStudyRequest.match(/^(?:let['’]?s\s+)?study\s+(.+)$/i);
+  if (
+    studyRequest?.[1]?.trim() &&
+    !/^(?:the\s+)?full\s+document$/i.test(studyRequest[1].trim())
+  ) {
+    return {
+      intent: "CHANGE_TOPIC",
+      confidence: 0.98,
+      args: { topic: studyRequest[1].trim() },
+      needsClarification: false,
+      rawTranscript,
+    };
+  }
+
+  // Natural questions must remain questions even while a short-answer quiz is
+  // active; they are not answer text for the current assessment item.
+  if (/^(?:what|who|why|how|when|where|which)\b.+\??$/i.test(normalized)) {
+    return {
+      intent: "ASK_STUDY_QUESTION",
+      confidence: 0.94,
+      args: { query: remainingCommand || rawTranscript },
+      needsClarification: false,
+      rawTranscript,
+    };
   }
 
   // 12. Review weak / full document
@@ -659,6 +774,8 @@ export function parseVoiceCommand(
       return { type: "change_mode", mode: classification.args?.mode || "guided" };
     case "NEXT_QUESTION":
       return { type: "next_question" };
+    case "SKIP_QUESTION":
+      return { type: "skip_question" };
     case "PREVIOUS_QUESTION":
       return { type: "previous_question" };
     case "REPEAT_QUESTION":
@@ -677,12 +794,12 @@ export function parseVoiceCommand(
     case "REQUEST_HINT":
       return { type: "give_hint" };
     case "START_QUIZ":
-      return { type: "start_quiz", topic: classification.args?.topic };
+      return { type: "start_quiz", topic: classification.args?.topic, questionFormat: classification.args?.questionFormat };
     case "CHANGE_TOPIC": {
       const t = classification.args?.topic;
       if (t === "weak") return { type: "review_weak" };
       if (t === "full_document") return { type: "study_full_document" };
-      if (classification.args?.isQuiz) return { type: "quiz_topic", topic: t || "" };
+      if (classification.args?.isQuiz) return { type: "quiz_topic", topic: t || "", questionFormat: classification.args?.questionFormat };
       return { type: "teach_topic", topic: t || "" };
     }
     case "SELECT_OPTION":

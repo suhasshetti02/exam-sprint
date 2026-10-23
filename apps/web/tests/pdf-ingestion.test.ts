@@ -151,7 +151,7 @@ describe("PDF Ingestion & Resolution Regression Suite", () => {
     const rubric = JSON.parse(qRow.expected_json);
     expect(rubric).toBeDefined();
     expect(rubric.kind).toBe("multiple_choice");
-    expect(rubric.correctAnswer).toBe("A");
+    expect(["A", "B", "C", "D"]).toContain(rubric.correctAnswer);
     expect(Array.isArray(rubric.acceptableVariants)).toBe(true);
 
     const verifier = new DefaultEvidenceVerifier();
@@ -169,11 +169,12 @@ describe("PDF Ingestion & Resolution Regression Suite", () => {
     };
 
     // Evaluate correct answer
-    const evalCorrect = evaluator.evaluate(questionRecord, "A");
+    const evalCorrect = evaluator.evaluate(questionRecord, rubric.correctAnswer);
     expect(evalCorrect.verdict).toBe("correct");
 
     // Evaluate incorrect answer
-    const evalIncorrect = evaluator.evaluate(questionRecord, "D");
+    const wrongOption = rubric.correctAnswer === "D" ? "A" : "D";
+    const evalIncorrect = evaluator.evaluate(questionRecord, wrongOption);
     expect(evalIncorrect.verdict).toBe("incorrect");
 
     // Cleanup

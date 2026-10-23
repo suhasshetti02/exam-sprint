@@ -10,21 +10,28 @@ const sessionRequestSchema = z.discriminatedUnion("action", [
     action: z.literal("start_session"),
     topic: z.string().max(200).optional(),
     focus: z.enum(["new", "weak", "review"]).optional(),
-    documentId: z.string().max(100).optional(),
+    documentId: z.string().max(500).optional(),
     goal: z.enum(["teach", "quiz", "weak", "full_document"]).optional(),
     sectionOrdinal: z.number().int().min(1).max(500).optional(),
+    requestType: z.enum(["question"]).optional(),
+    questionFormat: z.enum(["multiple_choice", "short_answer"]).optional(),
+    excludeQuestionId: z.string().max(500).optional(),
+    contextQuestion: z.string().max(500).optional(),
+    contextChunkId: z.string().max(500).optional(),
+    activeConceptId: z.string().max(200).optional(),
   }),
   z.object({
     action: z.literal("submit_answer"),
-    questionId: z.string().min(1).max(80),
+    // Uploaded question IDs may originate from older databases with verbose IDs.
+    questionId: z.string().min(1).max(500),
     answer: z.string().trim().min(1).max(2000),
     recoveryForMisconceptionLabel: z.string().min(1).max(200).optional(),
     clientAttemptId: z.string().min(1).max(120).optional(),
-    documentId: z.string().min(1).max(100).optional(),
+    documentId: z.string().min(1).max(500).optional(),
   }),
   z.object({
     action: z.literal("get_state"),
-    documentId: z.string().min(1).max(100).optional(),
+    documentId: z.string().min(1).max(500).optional(),
   }),
 ]);
 
@@ -75,6 +82,12 @@ export async function POST(req: Request) {
         documentId: data.documentId,
         goal: data.goal,
         sectionOrdinal: data.sectionOrdinal,
+        requestType: data.requestType,
+        questionFormat: data.questionFormat,
+        excludeQuestionId: data.excludeQuestionId,
+        contextQuestion: data.contextQuestion,
+        contextChunkId: data.contextChunkId,
+        activeConceptId: data.activeConceptId,
       });
       return NextResponse.json(response);
     }

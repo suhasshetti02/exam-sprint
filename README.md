@@ -7,7 +7,7 @@ quotation from the source**, remembers misconceptions, and retests weak concepts
 Built for the Amazon Developer Hackathon 2026, Alexa+ track. The web app is an Alexa+-style
 simulation client; the tutoring tools live in a real, self-hosted MCP server (Streamable HTTP).
 
-> **Status: Milestones 1, 2, 3, and 4 complete.** Fully working deterministic tutoring engine, MCP tools, Next.js frontend revision flow, and LLM-assisted agent orchestration with bounded tool calling and offline fallback.
+> **Local implementation status:** The app includes a self-hosted MCP server, an Alexa+-inspired web simulation, four distinct study goals, persistent local mastery, evidence-backed questions, and browser Web Speech API controls. Live Gemini calls, physical microphone behavior, public video availability, and direct Alexa+ integration are not claimed as verified here.
 
 ## Implementation status
 
@@ -33,6 +33,12 @@ simulation client; the tutoring tools live in a real, self-hosted MCP server (St
 
 All five MCP tools are registered, tested, and wired to the interactive Next.js tutoring UI via server-side route handlers with verified evidence citations, persistent SQLite mastery tracking, and an intelligent bounded LLM agent loop.
 
+## How the learning loop works
+
+Choose one of four goals: **Teach me this material**, **Quiz me on a topic**, **Revise my weak concepts**, or **Help me study the full document**. Rapid-Fire is a separate timed practice mode. StudyFlow retrieves from the selected notes, shows supporting evidence, evaluates the learner's answer, records progress in local SQLite, and uses persisted attempts or open misconceptions to guide later review. Concepts with no attempts are shown as **Not assessed**.
+
+The Alexa+ experience is simulated in the web client. The self-hosted MCP service is available locally over Streamable HTTP at `http://127.0.0.1:3001/mcp`; `/healthz` reports server health. Local tests and a local runtime handshake exercise protocol version `2025-11-25`. This does not establish a connection to Amazon's hosted Alexa+ service.
+
 ## Stack
 
 Next.js 16 (App Router) · React 19 · TypeScript 5.9 · Tailwind CSS 4 · MCP TypeScript SDK 1.32.1
@@ -40,8 +46,9 @@ Next.js 16 (App Router) · React 19 · TypeScript 5.9 · Tailwind CSS 4 · MCP T
 
 ## Prerequisites
 
-- Node.js **22.12 or newer** (`.nvmrc` pins 22; verified only on Node 22). No API keys, accounts, or paid services.
+- Node.js **22.12 or newer** (`.nvmrc` pins 22). The local readiness run used Node 24.14.0 and npm 11.9.0.
 - npm 10+ (ships with Node).
+- No key is required for the local deterministic tutor. A user-supplied key is required only for optional live Gemini-compatible responses.
 
 ## Install and run (Windows PowerShell)
 
@@ -130,7 +137,7 @@ To connect a live Google Gemini API key:
 
 ## Known limitations
 
-- **Voice I/O**: Browser speech synthesis and recognition (Web Speech API) are reserved for Milestone 5.
+- **Voice I/O** uses browser Web Speech APIs. Browser/microphone behavior and real speech output must be manually verified in the browser used for a demo.
 - **Single-Learner Local State**: In local development, the system operates in single-learner mode (`local-student`) stored in SQLite. Multi-user authentication and tenant isolation are not yet implemented.
 - **Testing**: The primary test suite (`npm test`) runs exclusively against mocked providers (`MockLlmProvider`) so that test runs are instant, free, and completely deterministic.
 - **Experimental SQLite**: `node:sqlite` is marked experimental in Node 22 and emits a warning; the schema is plain SQLite and portable to other drivers.
@@ -142,5 +149,4 @@ See "Recommended implementation sequence" in [ARCHITECTURE.md](ARCHITECTURE.md#i
 
 ## License
 
-The `LICENSE` file contains placeholders. The owner must set the copyright holder (or choose another
-license) before the repository is made public.
+The tracked `LICENSE` is an MIT template and still contains copyright/year placeholders. The repository is public; the owner should complete and review the license details before relying on it as the repository's open-source license.

@@ -203,8 +203,29 @@ Appendix only.
     }
   });
 
-  // 8. Question generation quality: 4 distinct choices, complete sentences, no ellipses
-  it("Phase 4.1: generates 4 distinct, complete options with category alignment", async () => {
+  it("advances to a distinct supported question when the active question is excluded", async () => {
+    const first = await startTutoringSession({
+      documentId: dbmsDocId,
+      topic: "Normalization",
+      goal: "quiz",
+    });
+    expect(first.question).toBeDefined();
+
+    const next = await startTutoringSession({
+      documentId: dbmsDocId,
+      topic: "Normalization",
+      goal: "quiz",
+      excludeQuestionId: first.question!.questionId,
+    });
+
+    expect(next.question).toBeDefined();
+    expect(next.question!.questionId).not.toBe(first.question!.questionId);
+    expect(next.evidence?.status).toBe("verified");
+    expect(next.evidence?.chunkId).not.toBe(first.evidence?.chunkId);
+  });
+
+  // 8. Question generation quality: abstain from unrelated cross-section distractors
+  it("Phase 4.1: uses a verified short-answer fallback when distractors are not concept-aligned", async () => {
     const sessionRes = await startTutoringSession({
       documentId: execDocId,
       topic: "Problem Statement",
@@ -213,29 +234,15 @@ Appendix only.
 
     expect(sessionRes.question).toBeDefined();
     const q = sessionRes.question!;
-    expect(q.choices?.length).toBe(4);
-
-    // 4 distinct choices
-    const uniqueChoices = new Set(q.choices!);
-    expect(uniqueChoices.size).toBe(4);
-
-    // None should have ellipses or broken starts
-    for (const choice of q.choices!) {
-      expect(choice).not.toContain("...");
-      expect(choice).not.toMatch(/^during\b/i);
-      expect(choice).not.toMatch(/^which\b/i);
-      expect(choice).not.toMatch(/^\(e\.g\./i);
-      expect(choice).not.toMatch(/^The opposite of/i);
-      expect(choice.length).toBeGreaterThan(15);
-      // Parentheses should be balanced
-      const openCount = (choice.match(/\(/g) || []).length;
-      const closeCount = (choice.match(/\)/g) || []).length;
-      expect(openCount).toBe(closeCount);
-    }
+    expect(q.kind).toBe("short_answer");
+    expect(q.choices).toEqual([]);
+    expect(q.evidence?.status).toBe("verified");
+    expect(q.evidence?.quote.length).toBeGreaterThan(15);
+    expect(q.evidence?.quote.toLowerCase()).toContain("incident resolution");
   });
 
-  // 9. Rubric alignment & deterministic evaluation
-  it("Phase 4.2: option A is the correct answer and aligns with canonicalAnswer rubric", async () => {
+  // 9. Rubric alignment & deterministic evaluation for abstained MCQ
+  it("Phase 4.2: the source answer grades correctly and unrelated text does not", async () => {
     const sessionRes = await startTutoringSession({
       documentId: execDocId,
       topic: "Problem Statement",
@@ -244,25 +251,22 @@ Appendix only.
 
     const q = sessionRes.question!;
     expect(q.choices).toBeDefined();
-    expect(q.choices?.length).toBe(4);
-
-    const db = openDb();
-    const qRow = db.prepare("SELECT expected_json FROM questions WHERE id = ?").get(q.questionId) as { expected_json: string };
-    db.close();
-    const correctLetter = JSON.parse(qRow.expected_json).correctAnswer;
-    const incorrectLetter = ["A", "B", "C", "D"].find((l) => l !== correctLetter)!;
+    expect(q.kind).toBe("short_answer");
+    expect(q.choices).toEqual([]);
+    const sourceAnswer = q.evidence?.quote;
+    expect(sourceAnswer).toBeTruthy();
 
     // Correct submission evaluation
     const evalCorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: correctLetter,
+      answer: sourceAnswer!,
     });
     expect(evalCorrect.evaluation?.verdict).toBe("correct");
 
     // Incorrect submission evaluation
     const evalIncorrect = await submitStudentAnswer({
       questionId: q.questionId,
-      answer: incorrectLetter,
+      answer: "An unrelated statement that is not supported by this passage.",
     });
     expect(evalIncorrect.evaluation?.verdict).toBe("incorrect");
     expect(evalIncorrect.evaluation?.explanation).toBeDefined();

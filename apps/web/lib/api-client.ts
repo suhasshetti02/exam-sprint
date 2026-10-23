@@ -95,6 +95,8 @@ export interface SessionResponse {
   toolTraces: ToolTraceEntry[];
   provider?: "llm" | "deterministic_fallback";
   executionMetadata?: ExecutionMetadata;
+  sectionOrdinal?: number;
+  totalSections?: number;
 }
 
 /** Ask the web backend (which talks to the MCP server) what the MCP server reports. */
@@ -126,6 +128,12 @@ export async function startSession(
     documentId?: string;
     goal?: "teach" | "quiz" | "weak" | "full_document";
     sectionOrdinal?: number;
+    requestType?: "question";
+    questionFormat?: "multiple_choice" | "short_answer";
+    excludeQuestionId?: string;
+    contextQuestion?: string;
+    contextChunkId?: string;
+    activeConceptId?: string;
   } = {},
   signal?: AbortSignal,
 ): Promise<SessionResponse> {

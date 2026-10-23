@@ -123,6 +123,7 @@ export function TutoringSession() {
   // In-flight double-click protection and stable retry attempt ID tracking
   const inFlightSubmissionRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
   const lastAttemptRef = useRef<{ questionId: string; answer: string; clientAttemptId: string } | null>(null);
+  const nextQuestionInFlightRef = useRef(false);
 
   // Auto-advance progression timer refs
   const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -183,7 +184,7 @@ export function TutoringSession() {
       selectedOption,
     },
     onCommand: (cmd, raw) => {
-      voiceCommandRef.current(cmd, raw);
+      return voiceCommandRef.current(cmd, raw);
     },
     onSpeechEnd: () => {
       if (latestEvaluationRef.current && progressionModeRef.current === "automatic") {
@@ -213,9 +214,7 @@ export function TutoringSession() {
       .then((data) => {
         if (!active) return;
         setMasteryList(data.masteryList);
-        if (data.toolTraces && data.toolTraces.length > 0) {
-          setToolTraces((prev) => [...data.toolTraces, ...prev]);
-        }
+        setToolTraces(data.toolTraces || []);
       })
       .catch(() => {
         // Handled silently
@@ -289,6 +288,8 @@ export function TutoringSession() {
     goal?: LearningGoal,
     docTitle?: string,
     sectionOrdinal?: number,
+    questionFormat?: "multiple_choice" | "short_answer",
+    excludeQuestionId?: string,
   ) => {
     const requestId = ++latestRequestIdRef.current;
     const cleanTopic = (topic || "").trim();
@@ -327,11 +328,17 @@ export function TutoringSession() {
         documentId: effectiveDocId,
         goal: effectiveGoal,
         sectionOrdinal: effectiveGoal === "full_document" ? effectiveOrdinal : undefined,
+        questionFormat,
+        excludeQuestionId,
       });
 
       if (requestId !== latestRequestIdRef.current) {
         // Stale response from an earlier request discarded
         return;
+      }
+
+      if (effectiveGoal === "full_document" && res.sectionOrdinal !== undefined) {
+        setCurrentSectionOrdinal(res.sectionOrdinal);
       }
 
       let q: QuestionData | undefined = currentQuestion;
@@ -350,6 +357,14 @@ export function TutoringSession() {
       } else if (!res.question) {
         // If question could not be generated (e.g. unsupported topic)
         setErrorMessage(res.message);
+        if (excludeQuestionId) {
+          setCurrentQuestion(undefined);
+          setCurrentEvidence(undefined);
+          setLatestEvaluation(undefined);
+          latestEvaluationRef.current = undefined;
+          setSelectedOption(undefined);
+          setPendingVoiceSubmission(null);
+        }
       }
 
       if (res.provider) {
@@ -361,7 +376,7 @@ export function TutoringSession() {
 
       setMasteryList(res.masteryList);
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
@@ -430,6 +445,7 @@ export function TutoringSession() {
 
   const handleSubmitAnswer = async (answer: string) => {
     if (!currentQuestion) return;
+    if (latestEvaluationRef.current) return;
     const activeQuestionId = currentQuestion.questionId;
 
     // Concurrent double-click guard: ignore duplicate in-flight invocation
@@ -489,6 +505,7 @@ export function TutoringSession() {
         ev = res.evidence || res.question.evidence;
       } else {
         setLatestEvaluation(res.evaluation);
+        latestEvaluationRef.current = res.evaluation;
         if (res.evidence) {
           setCurrentEvidence(res.evidence);
           ev = res.evidence;
@@ -504,7 +521,7 @@ export function TutoringSession() {
       setMasteryList(res.masteryList);
 
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
@@ -572,23 +589,90 @@ export function TutoringSession() {
     }
   };
 
-  const handleNextQuestion = () => {
+  const handleNextQuestion = async () => {
+    if (nextQuestionInFlightRef.current || isLoading) return;
+    nextQuestionInFlightRef.current = true;
     cancelAutoAdvance();
     setSelectedOption(undefined);
     setLatestEvaluation(undefined);
     latestEvaluationRef.current = undefined;
     setPendingVoiceSubmission(null);
-    if (activeGoal === "full_document") {
-      const nextSec = currentSectionOrdinal + 1;
-      setCurrentSectionOrdinal(nextSec);
-      handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, nextSec);
-    } else if (activeGoal === "weak") {
-      handleStartTopic("weak", "weak", activeDocumentId, "weak");
-    } else if (currentQuestion) {
-      handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, activeGoal);
-    } else {
-      handleStartTopic(suggestedTopics[0]?.topic ?? "", "new", activeDocumentId, activeGoal);
+    try {
+      if (activeGoal === "full_document") {
+        const nextSec = currentSectionOrdinal + 1;
+        setCurrentSectionOrdinal(nextSec);
+        await handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, nextSec);
+      } else if (activeGoal === "weak") {
+        await handleStartTopic("weak", "weak", activeDocumentId, "weak", undefined, undefined, undefined, currentQuestion?.questionId);
+      } else if (currentQuestion) {
+        await handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      } else {
+        await handleStartTopic(suggestedTopics[0]?.topic ?? "", "new", activeDocumentId, activeGoal);
+      }
+    } finally {
+      nextQuestionInFlightRef.current = false;
     }
+  };
+
+  const handleSkipQuestion = async () => {
+    if (!currentQuestion) {
+      setMessages((previous) => [...previous, {
+        id: createMsgId("tutor_skip_none"),
+        role: "tutor",
+        text: "There is no active question to skip.",
+        timestamp: createIsoTimestamp(),
+      }]);
+      return;
+    }
+    if (nextQuestionInFlightRef.current || isLoading) return;
+    nextQuestionInFlightRef.current = true;
+    cancelAutoAdvance();
+    setMessages((previous) => [...previous, {
+      id: createMsgId("tutor_skip"),
+      role: "tutor",
+      text: "Skipped without grading or recording an attempt.",
+      timestamp: createIsoTimestamp(),
+    }]);
+    const nextTopic = suggestedTopics.find((topic) =>
+      topic.topic.toLowerCase() !== currentQuestion?.conceptId.toLowerCase() &&
+      topic.label.toLowerCase() !== currentQuestion?.conceptId.toLowerCase(),
+    );
+    try {
+      if (nextTopic) {
+        await handleStartTopic(nextTopic.topic, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      } else if (activeGoal === "full_document") {
+        const nextSec = currentSectionOrdinal + 1;
+        setCurrentSectionOrdinal(nextSec);
+        await handleStartTopic("full_document", "new", activeDocumentId, "full_document", undefined, nextSec);
+      } else if (activeGoal === "weak") {
+        await handleStartTopic("weak", "weak", activeDocumentId, "weak", undefined, undefined, undefined, currentQuestion.questionId);
+      } else if (currentQuestion) {
+        await handleStartTopic(currentQuestion.conceptId, "new", activeDocumentId, activeGoal, undefined, undefined, undefined, currentQuestion.questionId);
+      }
+    } finally {
+      nextQuestionInFlightRef.current = false;
+    }
+  };
+
+  const handleRequestQuestionFormat = (questionFormat: "multiple_choice" | "short_answer") => {
+    if (!currentQuestion) return;
+    const topic = currentQuestion.evidence?.chunkId.split("#").pop()?.replace(/[-_]+/g, " ") || currentQuestion.conceptId;
+    void handleStartTopic(topic, "new", activeDocumentId, activeGoal, undefined, undefined, questionFormat);
+  };
+
+  const handleRepeatActiveQuestion = () => {
+    if (!currentQuestion) return;
+    const choices = currentQuestion.choices?.map((choice, index) => `${String.fromCharCode(65 + index)}) ${choice}`).join("\n");
+    const text = `Repeating question:\n\n${currentQuestion.prompt}${choices ? `\n\n${choices}` : ""}`;
+    setMessages((previous) => [...previous, { id: createMsgId("tutor_repeat"), role: "tutor", text, timestamp: createIsoTimestamp() }]);
+    if (voice.voiceOutputEnabled) voice.speak(text);
+  };
+
+  const handleGiveQuestionHint = () => {
+    if (!currentQuestion) return;
+    const text = `Hint: Focus on the verified passage for ${currentQuestion.conceptId.replace(/[_-]+/g, " ")} and identify the phrase that directly answers the question. I can explain the concept if you want the full explanation.`;
+    setMessages((previous) => [...previous, { id: createMsgId("tutor_hint"), role: "tutor", text, timestamp: createIsoTimestamp() }]);
+    if (voice.voiceOutputEnabled) voice.speak(text);
   };
 
   const handleSwitchMode = (goal: LearningGoal) => {
@@ -625,8 +709,12 @@ export function TutoringSession() {
     try {
       const res = await startSession({
         topic: query,
-        goal: "teach",
+        goal: activeGoal,
         documentId: activeDocumentId,
+        requestType: "question",
+        contextChunkId: currentEvidence?.chunkId || currentQuestion?.evidence?.chunkId,
+        activeConceptId: currentQuestion?.conceptId,
+        contextQuestion: currentQuestion?.prompt,
       });
 
       if (requestId !== latestRequestIdRef.current) return;
@@ -637,9 +725,10 @@ export function TutoringSession() {
       if (res.provider) {
         setCurrentProvider(res.provider);
       }
+      setExecutionMetadata(res.executionMetadata);
       setMasteryList(res.masteryList);
       if (res.toolTraces) {
-        setToolTraces((prev) => [...res.toolTraces, ...prev]);
+        setToolTraces(res.toolTraces);
       }
 
       const finalMessages: MessageItem[] = [
@@ -735,13 +824,17 @@ export function TutoringSession() {
         }
         case "start_quiz": {
           cancelAutoAdvance();
-          const target = command.topic || activeDocumentTitle || "quiz";
-          await handleStartTopic(target, "new", activeDocumentId, "quiz");
+          const target = command.topic || currentQuestion?.conceptId || activeDocumentTitle || "quiz";
+          await handleStartTopic(target, "new", activeDocumentId, "quiz", undefined, undefined, command.questionFormat);
           break;
         }
         case "next_question": {
           cancelAutoAdvance();
           handleNextQuestion();
+          break;
+        }
+        case "skip_question": {
+          await handleSkipQuestion();
           break;
         }
         case "previous_question": {
@@ -750,13 +843,6 @@ export function TutoringSession() {
         }
         case "repeat_question": {
           if (currentQuestion) {
-            let questionAudio = `Question: ${currentQuestion.prompt}.`;
-            if (currentQuestion.kind === "multiple_choice" && currentQuestion.choices) {
-              const choicesSpoken = currentQuestion.choices
-                .map((c, i) => `Option ${String.fromCharCode(65 + i)}: ${c}`)
-                .join(". ");
-              questionAudio += ` Choices are: ${choicesSpoken}`;
-            }
             setMessages((prev) => [
               ...prev,
               {
@@ -770,9 +856,6 @@ export function TutoringSession() {
                 timestamp: new Date().toISOString(),
               },
             ]);
-            if (voice.voiceOutputEnabled) {
-              voice.speak(questionAudio);
-            }
           } else {
             const msg = "There is no active question right now.";
             setMessages((prev) => [
@@ -792,10 +875,6 @@ export function TutoringSession() {
         }
         case "read_options": {
           if (currentQuestion?.choices && currentQuestion.choices.length > 0) {
-            const choicesSpoken = currentQuestion.choices
-              .map((c, i) => `Option ${String.fromCharCode(65 + i)}: ${c}`)
-              .join(". ");
-            voice.speak(`The options are: ${choicesSpoken}`);
             setMessages((prev) => [
               ...prev,
               {
@@ -881,13 +960,11 @@ export function TutoringSession() {
         case "request_example": {
           let responseText = "";
           if (currentEvidence?.quote) {
-            responseText = `Here is an illustrative example applying this concept:\n\n` +
-              `Suppose a database stores customer orders. To satisfy this rule, every non-key attribute must depend directly on the primary key, avoiding anomalies when updating records.\n\n` +
-              `Grounded in verified note fact:\n"${currentEvidence.quote.slice(0, 150)}"`;
-          } else if (currentQuestion) {
-            responseText = `Consider how this applies in practice to: "${currentQuestion.prompt}". In real-world system design, this rule ensures data integrity.`;
+            responseText = `I don't have a concrete example in your notes for this concept. The verified passage says:\n\n"${currentEvidence.quote}"`;
+          } else if (currentQuestion?.evidence?.quote) {
+            responseText = `I don't have a concrete example in your notes for this concept. The verified passage says:\n\n"${currentQuestion.evidence.quote}"`;
           } else {
-            responseText = "Select a topic first to explore practical examples.";
+            responseText = "I don't have verified source material for an example yet. Please select a topic or upload notes first.";
           }
           setMessages((prev) => [
             ...prev,
@@ -906,13 +983,12 @@ export function TutoringSession() {
         case "give_hint": {
           if (currentEvidence?.quote) {
             const hint = `Here is a hint from your study notes: "${currentEvidence.quote.slice(0, 140)}..."`;
-            voice.speak(hint);
             setMessages((prev) => [
               ...prev,
               {
                 id: `tutor_hint_${Date.now()}`,
                 role: "tutor",
-                text: `💡 ${hint}`,
+                text: hint,
                 timestamp: new Date().toISOString(),
               },
             ]);
@@ -927,12 +1003,14 @@ export function TutoringSession() {
         }
         case "teach_topic": {
           cancelAutoAdvance();
-          await handleStartTopic(command.topic, "new", activeDocumentId, "teach");
+          const isSectionRequest = /^(?:(?:the\s+)?(?:section|chapter)\s+)?\d+(?:\.\d+)*(?:\s+.*)?$/i.test(command.topic);
+          const goal = activeGoal === "full_document" && isSectionRequest ? "full_document" : "teach";
+          await handleStartTopic(command.topic, "new", activeDocumentId, goal);
           break;
         }
         case "quiz_topic": {
           cancelAutoAdvance();
-          await handleStartTopic(command.topic, "new", activeDocumentId, "quiz");
+          await handleStartTopic(command.topic, "new", activeDocumentId, "quiz", undefined, undefined, command.questionFormat);
           break;
         }
         case "review_weak": {
@@ -1057,8 +1135,14 @@ export function TutoringSession() {
       return;
     }
 
-    // Only non-commands search study notes for topic practice
-    await handleStartTopic(trimmed);
+    // In full-document mode, a free-form question should be answered in context,
+    // not interpreted as a request to restart the current section.
+    if (activeGoal === "full_document") {
+      await handleAskStudyQuestion(trimmed);
+    } else {
+      // Only non-commands search study notes for topic practice
+      await handleStartTopic(trimmed);
+    }
   };
 
   const handleExplainSimply = () => {
@@ -1097,9 +1181,7 @@ export function TutoringSession() {
     fetchInitialState()
       .then((data) => {
         setMasteryList(data.masteryList);
-        if (traces.length > 0) {
-          setToolTraces((prev) => [...traces, ...prev]);
-        }
+        setToolTraces(traces);
       })
       .catch(() => {
         // Non-fatal
@@ -1370,6 +1452,12 @@ export function TutoringSession() {
               evaluation={latestEvaluation}
               onSubmitAnswer={handleSubmitAnswer}
               onNextQuestion={handleNextQuestion}
+              onSkipQuestion={handleSkipQuestion}
+              onRepeatQuestion={handleRepeatActiveQuestion}
+              onExplainConcept={handleExplainSimply}
+              onGiveHint={handleGiveQuestionHint}
+              onRequestMultipleChoice={() => handleRequestQuestionFormat("multiple_choice")}
+              onRequestShortAnswer={() => handleRequestQuestionFormat("short_answer")}
               isLoading={isLoading}
               selectedOption={selectedOption}
               progressionMode={progressionMode}

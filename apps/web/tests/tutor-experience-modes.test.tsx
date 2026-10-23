@@ -5,7 +5,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import { startTutoringSession, submitStudentAnswer } from "../lib/server/tutoring-policy";
 import { classifyIntent, parseVoiceCommand } from "../lib/voice-command-parser";
 import { EvidenceCard } from "../components/EvidenceCard";
-import { openDb } from "../lib/server/document-service";
+import { deleteDocument, ingestDocument, openDb } from "../lib/server/document-service";
 
 afterEach(() => {
   cleanup();
@@ -32,16 +32,27 @@ describe("Tutor Experience — Four Learning Modes, Voice, & Conversation Suite"
     });
 
     it("B. Topic Quiz mode generates grounded quiz with stable choices and verified evidence", async () => {
-      const res = await startTutoringSession({
-        topic: "1NF",
-        goal: "quiz",
-      });
+      const fixture = await ingestDocument(
+        "Quiz Mode Fixture.md",
+        Buffer.from(`# 1NF\nA relation is in First Normal Form when each attribute contains an atomic value and each field contains a single value rather than a repeating group.`, "utf8"),
+      );
+      expect(fixture.success).toBe(true);
 
-      expect(res.question).toBeDefined();
-      expect(res.question?.choices).toBeDefined();
-      expect(res.question?.choices?.length).toBeGreaterThanOrEqual(2);
-      expect(res.evidence?.status).toBe("verified");
-      expect(res.message).toContain("1nf");
+      try {
+        const res = await startTutoringSession({
+          documentId: fixture.documentId,
+          topic: "1NF",
+          goal: "quiz",
+        });
+
+        expect(res.question).toBeDefined();
+        expect(res.question?.choices).toBeDefined();
+        expect(res.question?.choices?.length).toBeGreaterThanOrEqual(2);
+        expect(res.evidence?.status).toBe("verified");
+        expect(res.evidence?.quote.toLowerCase()).toContain("first normal form");
+      } finally {
+        if (fixture.documentId) deleteDocument(fixture.documentId);
+      }
     });
 
     it("C. Revise Weak Concepts explains lack of progress history for new document and falls back honestly", async () => {

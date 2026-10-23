@@ -13,7 +13,7 @@ import {
 import { runTutoringOrchestration } from "../lib/server/llm/orchestrator";
 import { MockLlmProvider, OpenAiCompatibleProvider } from "../lib/server/llm/providers";
 import { executeMcpTool } from "../lib/server/mcp-client";
-import type { SourceChunk } from "@exam-sprint/core";
+import { DefaultEvidenceVerifier, DeterministicAnswerEvaluator, type QuestionRecord, type SourceChunk } from "@exam-sprint/core";
 
 describe("Core Assessment Integrity & Reliability Suite", () => {
   let docAId: string;
@@ -63,11 +63,10 @@ Rubisco is the primary enzyme responsible for fixing carbon dioxide into organic
   });
 
   // =========================================================================
-  // TASK 1: Eliminate multiple-choice answer-position bias
+  // TASK 1: Avoid fabricated multiple-choice distractors
   // =========================================================================
-  describe("Task 1: Multiple-choice answer position balance", () => {
-    it("generates 200 answer permutations balanced across positions A, B, C, D (15-35% each)", () => {
-      const positionCounts = { A: 0, B: 0, C: 0, D: 0 };
+  describe("Task 1: Question format quality", () => {
+    it("uses short-answer fallback when sibling passages are unrelated (200 samples)", () => {
       const sampleSize = 200;
 
       const dummyDistractors: SourceChunk[] = [
@@ -105,21 +104,13 @@ Rubisco is the primary enzyme responsible for fixing carbon dioxide into organic
 
         const q = createQuestionForChunk(chunk, `concept_${i}`, undefined, dummyDistractors);
         expect(q).not.toBeNull();
-        expect(q?.choices).toHaveLength(4);
-        const correctLetter = q?.expected.correctAnswer as "A" | "B" | "C" | "D";
-        expect(["A", "B", "C", "D"]).toContain(correctLetter);
-        positionCounts[correctLetter]++;
-      }
-
-      for (const [, count] of Object.entries(positionCounts)) {
-        const pct = (count / sampleSize) * 100;
-        // Verify balance: each position accounts for 15-35% of the 200 samples
-        expect(pct).toBeGreaterThanOrEqual(15);
-        expect(pct).toBeLessThanOrEqual(35);
+        expect(q?.kind).toBe("short_answer");
+        expect(q?.choices).toEqual([]);
+        expect(q?.expected.correctAnswer).toBe(q?.evidenceQuote);
       }
     });
 
-    it("evaluates correct answer successfully at each position (A, B, C, D) and rejects wrong answers", async () => {
+    it("does not let a forced answer position turn unrelated passages into distractors", () => {
       const dummyDistractors: SourceChunk[] = [
         {
           id: "dist_a",
@@ -144,66 +135,38 @@ Rubisco is the primary enzyme responsible for fixing carbon dioxide into organic
         },
       ];
 
-      const db = openDb();
-      try {
-        const letters: Array<"A" | "B" | "C" | "D"> = ["A", "B", "C", "D"];
-        for (let targetIdx = 0; targetIdx < 4; targetIdx++) {
-          const expectedLetter = letters[targetIdx]!;
-          const chunk: SourceChunk = {
-            id: `chunk_pos_test_${targetIdx}`,
-            documentId: docAId,
-            heading: `Forced Position ${expectedLetter}`,
-            ordinal: targetIdx + 100,
-            text: `A page fault occurs when a program attempts to access unmapped physical RAM blocks safely ${targetIdx}.`,
-          };
+      const evaluator = new DeterministicAnswerEvaluator(new DefaultEvidenceVerifier());
+      const letters = ["A", "B", "C", "D"] as const;
+      for (let targetIdx = 0; targetIdx < 4; targetIdx++) {
+        const chunk: SourceChunk = {
+          id: `chunk_pos_test_${targetIdx}`,
+          documentId: docAId,
+          heading: `Forced Position ${letters[targetIdx]}`,
+          ordinal: targetIdx + 100,
+          text: `A page fault occurs when a program attempts to access unmapped physical RAM blocks safely ${targetIdx}.`,
+        };
 
-          const conceptId = `${docAId}__forced_${targetIdx}`;
-          const q = createQuestionForChunk(chunk, conceptId, undefined, dummyDistractors, targetIdx);
-          expect(q).not.toBeNull();
-          expect(q!.expected.correctAnswer).toBe(expectedLetter);
+        const conceptId = `${docAId}__forced_${targetIdx}`;
+        const q = createQuestionForChunk(chunk, conceptId, undefined, dummyDistractors, targetIdx);
+        expect(q).not.toBeNull();
+        expect(q!.expected.correctAnswer).toBe(q!.evidenceQuote);
+        expect(q!.choices).toEqual([]);
 
-          // Save concept and question to DB
-          db.prepare("INSERT OR IGNORE INTO concepts (id, title, document_id) VALUES (?, ?, ?)").run(
-            conceptId,
-            `Forced ${expectedLetter}`,
-            docAId,
-          );
-          db.prepare(
-            `INSERT OR REPLACE INTO questions (
-              id, concept_id, kind, prompt, choices_json, expected_json,
-              evidence_chunk_id, evidence_quote, evidence_start, evidence_end, verified_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).run(
-            q!.id,
-            q!.conceptId,
-            q!.kind,
-            q!.prompt,
-            JSON.stringify(q!.choices),
-            JSON.stringify(q!.expected),
-            docAId + "#virtual-memory",
-            q!.evidenceQuote,
-            q!.evidenceStart,
-            q!.evidenceEnd,
-            new Date().toISOString(),
-          );
-
-          // Submit the correct option letter
-          const evalCorrect = await submitStudentAnswer({
-            questionId: q!.id,
-            answer: expectedLetter,
-          });
-          expect(evalCorrect.evaluation?.verdict).toBe("correct");
-
-          // Submit a wrong option letter
-          const wrongLetter = letters.find((l) => l !== expectedLetter)!;
-          const evalWrong = await submitStudentAnswer({
-            questionId: q!.id,
-            answer: wrongLetter,
-          });
-          expect(evalWrong.evaluation?.verdict).toBe("incorrect");
-        }
-      } finally {
-        db.close();
+        const record: QuestionRecord = {
+          id: q!.id,
+          conceptId: q!.conceptId,
+          kind: q!.kind,
+          prompt: q!.prompt,
+          choices: [],
+          expected: q!.expected,
+          evidenceChunkId: chunk.id,
+          evidenceQuote: q!.evidenceQuote,
+          evidenceStart: q!.evidenceStart,
+          evidenceEnd: q!.evidenceEnd,
+          verifiedAt: new Date().toISOString(),
+        };
+        expect(evaluator.evaluate(record, q!.evidenceQuote).verdict).toBe("correct");
+        expect(evaluator.evaluate(record, `Option ${letters[targetIdx]} unrelated`).verdict).toBe("incorrect");
       }
     });
 

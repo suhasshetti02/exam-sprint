@@ -42,6 +42,8 @@ export interface SessionResponse {
   };
   masteryList: GetMasteryOutput["concepts"];
   toolTraces: ToolTraceEntry[];
+  sectionOrdinal?: number;
+  totalSections?: number;
   provider?: "llm" | "deterministic_fallback";
   executionMetadata?: {
     executionPath: "live_model" | "deterministic_fallback" | "mixed";
@@ -67,6 +69,26 @@ export function resolveConceptId(
 
 import { createQuestionForChunk, headingToSlug, openDb } from "./document-service";
 
+function requestedSectionNumber(topic?: string): string | undefined {
+  const match = topic?.trim().match(
+    /^(?:(?:let['’]?s\s+)?study\s+)?(?:(?:the\s+)?(?:section|chapter)\s+)?(\d+(?:\.\d+)*)(?:\s+.*)?$/i,
+  );
+  return match?.[1];
+}
+
+function sectionNumberFromHeading(heading: string): string | undefined {
+  return heading.trim().match(/^(?:(?:section|chapter)\s+)?(\d+(?:\.\d+)*)(?=$|[\s.:–—-])/i)?.[1];
+}
+
+function sectionTitleMatches(heading: string, requestedTitle: string): boolean {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const title = normalize(requestedTitle);
+  if (!title) return true;
+  const headingTitle = normalize(heading.replace(/^(?:(?:section|chapter)\s+)?\d+(?:\.\d+)*[\s.:–—-]*/, ""));
+  const meaningfulWords = title.split(/\s+/).filter((word) => word.length > 2 && !["the", "and", "for", "with"].includes(word));
+  return meaningfulWords.length > 0 && meaningfulWords.every((word) => headingTitle.includes(word));
+}
+
 /**
  * Handles starting a revision session or requesting a quiz topic.
  */
@@ -76,9 +98,12 @@ export async function startTutoringSession(options: {
   documentId?: string;
   goal?: "teach" | "quiz" | "weak" | "full_document";
   sectionOrdinal?: number;
+  questionFormat?: "multiple_choice" | "short_answer";
+  excludeQuestionId?: string;
 }): Promise<SessionResponse> {
   const toolTraces: ToolTraceEntry[] = [];
   const rawTopic = options.topic?.trim();
+  const explicitSectionNumber = requestedSectionNumber(rawTopic);
   const isWeak = options.focus === "weak" || checkWeak(rawTopic);
 
   // If a student-uploaded document is selected, prioritize its grounded material
@@ -113,9 +138,9 @@ export async function startTutoringSession(options: {
             }>;
 
           if (docQuestions.length > 0) {
-            let chosen: typeof docQuestions[0] | undefined = docQuestions[0]!;
+            let chosen: typeof docQuestions[0] | undefined =
+              docQuestions.find((question) => question.id !== options.excludeQuestionId) ?? docQuestions[0]!;
             let chosenExcerpt = chosen.evidence_quote || "";
-            let chosenExcerptChunkId = chosen.evidence_chunk_id;
             let targetHeading = "";
             let fullDocMeta: { currentSection: number; totalSections: number; skippedSections: number } | undefined;
             let weakProgressMeta: { hasHistory: boolean; reason: string } | undefined;
@@ -123,7 +148,7 @@ export async function startTutoringSession(options: {
             const isFullDocGoal = options.goal === "full_document" || rawTopic === "full_document";
             const isWeakGoal = options.goal === "weak" || (rawTopic === "weak" || isWeak);
 
-            if (isFullDocGoal) {
+            if (isFullDocGoal || explicitSectionNumber) {
               // Full document study: traverse substantive chunks sequentially by ordinal ASC
               const allDocChunks = db
                 .prepare(
@@ -142,6 +167,7 @@ export async function startTutoringSession(options: {
                 const textLen = c.text.trim().length;
                 if (textLen < 40) return false;
                 const h = c.heading.toLowerCase();
+                if (h === doc.title.toLowerCase()) return false;
                 if (/^(table of contents|contents|metadata|index|preface|appendix)$/i.test(h)) return false;
                 return true;
               };
@@ -154,12 +180,35 @@ export async function startTutoringSession(options: {
                 ? options.sectionOrdinal
                 : 1;
               const targetIndex = Math.min(Math.max(1, requestedOrdinal), totalSections) - 1;
-              const selectedChunk = substantiveChunks[targetIndex] || allDocChunks[0];
+              const requestedTitle = explicitSectionNumber
+                ? (rawTopic || "").replace(/^(?:let['’]?s\s+)?study\s+/i, "").replace(/^(?:(?:the\s+)?(?:section|chapter)\s+)?\d+(?:\.\d+)*\s*/i, "").trim()
+                : "";
+              const selectedChunk = explicitSectionNumber
+                ? substantiveChunks.find((chunk) =>
+                    sectionNumberFromHeading(chunk.heading) === explicitSectionNumber &&
+                    sectionTitleMatches(chunk.heading, requestedTitle),
+                  )
+                : substantiveChunks[targetIndex] || allDocChunks[0];
+
+              if (explicitSectionNumber && !selectedChunk) {
+                const available = substantiveChunks
+                  .slice(0, 8)
+                  .map((chunk) => chunk.heading)
+                  .filter(Boolean)
+                  .join("; ");
+                return {
+                  message: `I couldn't match section ${explicitSectionNumber}${requestedTitle ? ` (${requestedTitle})` : ""} to a heading in "${doc.title}". Available sections include: ${available || "no clearly numbered sections"}. Please choose one of those headings.`,
+                  masteryList: [],
+                  toolTraces,
+                  provider: "deterministic_fallback",
+                };
+              }
 
               if (selectedChunk) {
+                const resolvedTargetIndex = substantiveChunks.indexOf(selectedChunk);
                 targetHeading = selectedChunk.heading;
                 fullDocMeta = {
-                  currentSection: targetIndex + 1,
+                  currentSection: resolvedTargetIndex >= 0 ? resolvedTargetIndex + 1 : targetIndex + 1,
                   totalSections,
                   skippedSections,
                 };
@@ -168,7 +217,6 @@ export async function startTutoringSession(options: {
                 if (matchedQ) {
                   chosen = matchedQ;
                   chosenExcerpt = matchedQ.evidence_quote;
-                  chosenExcerptChunkId = matchedQ.evidence_chunk_id;
                 } else {
                   const conceptId = `${doc.id}__${headingToSlug(selectedChunk.heading)}`;
                   const selectedChunkChunk: SourceChunk = {
@@ -225,7 +273,9 @@ export async function startTutoringSession(options: {
                       evidence_end: tailoredQ.evidenceEnd,
                     };
                     chosenExcerpt = selectedChunk.text;
-                    chosenExcerptChunkId = selectedChunk.id;
+                  } else {
+                    chosen = undefined;
+                    chosenExcerpt = selectedChunk.text;
                   }
                 }
               }
@@ -262,7 +312,6 @@ export async function startTutoringSession(options: {
                 if (matchedQ) {
                   chosen = matchedQ;
                   chosenExcerpt = matchedQ.evidence_quote;
-                  chosenExcerptChunkId = matchedQ.evidence_chunk_id;
                 }
 
                 const reason = weakConceptRow.top_misc_label
@@ -296,10 +345,71 @@ export async function startTutoringSession(options: {
               const relevantHits = searchHits.filter((h) => h.documentId === doc.id && h.score > 0);
 
               if (relevantHits.length > 0) {
-                const topHit = relevantHits[0]!;
+                const allDocChunksForSelection = db
+                  .prepare("SELECT id, document_id, heading, ordinal, text FROM chunks WHERE document_id = ? ORDER BY ordinal ASC")
+                  .all(doc.id) as Array<{
+                    id: string;
+                    document_id: string;
+                    heading: string;
+                    ordinal: number;
+                    text: string;
+                  }>;
+                const sourceChunks = allDocChunksForSelection.map((row) => ({
+                  id: row.id,
+                  documentId: row.document_id,
+                  heading: row.heading,
+                  ordinal: row.ordinal,
+                  text: row.text,
+                }));
+                // BM25 relevance alone is not enough for an assessment: a top hit may be
+                // a learning objective or caption. Pick the first retrieved passage that
+                // can actually support a complete, named question.
+                const excludedChunkId = options.excludeQuestionId
+                  ? docQuestions.find((question) => question.id === options.excludeQuestionId)?.evidence_chunk_id ??
+                    (db.prepare("SELECT evidence_chunk_id FROM questions WHERE id = ? AND concept_id IN (SELECT id FROM concepts WHERE document_id = ?)")
+                      .get(options.excludeQuestionId, doc.id) as { evidence_chunk_id: string } | undefined)?.evidence_chunk_id
+                  : undefined;
+                const excludedIndex = sourceChunks.findIndex((chunk) => chunk.id === excludedChunkId);
+                const subsequentChunks = excludedIndex >= 0
+                  ? [...sourceChunks.slice(excludedIndex + 1), ...sourceChunks.slice(0, excludedIndex)]
+                  : sourceChunks;
+                const candidatesByRelevance = [
+                  ...relevantHits.map((hit) => ({
+                    id: hit.chunkId,
+                    documentId: hit.documentId,
+                    heading: hit.heading,
+                    ordinal: sourceChunks.find((chunk) => chunk.id === hit.chunkId)?.ordinal ?? 0,
+                    text: hit.text,
+                  })),
+                  ...subsequentChunks,
+                ].filter((chunk, index, all) => all.findIndex((candidate) => candidate.id === chunk.id) === index);
+                const selectedChunkForQuestion = candidatesByRelevance.find((chunk) => {
+                  const candidate = createQuestionForChunk(
+                    chunk,
+                    `${doc.id}__${headingToSlug(chunk.heading)}`,
+                    rawTopic,
+                    sourceChunks,
+                    undefined,
+                    options.questionFormat,
+                  );
+                  return Boolean(candidate && candidate.id !== options.excludeQuestionId);
+                });
+                if (!selectedChunkForQuestion) {
+                  return {
+                    message: options.excludeQuestionId
+                      ? `There are no more distinct questions I can safely create from "${doc.title}" right now. Choose another topic or add more detailed notes to continue.`
+                      : `I found material related to "${rawTopic}" in "${doc.title}", but the matching passages do not contain enough explanatory detail for a reliable question. Try another topic or upload notes with a definition or explanation.`,
+                    question: undefined,
+                    evidence: undefined,
+                    masteryList: [],
+                    toolTraces,
+                    provider: "deterministic_fallback",
+                  };
+                }
+                const topHit = selectedChunkForQuestion;
                 const chunkRow = db
                   .prepare("SELECT id, document_id, heading, ordinal, text FROM chunks WHERE id = ?")
-                  .get(topHit.chunkId) as {
+                  .get(topHit.id) as {
                     id: string;
                     document_id: string;
                     heading: string;
@@ -335,7 +445,7 @@ export async function startTutoringSession(options: {
                     ordinal: r.ordinal,
                     text: r.text,
                   }));
-                  const tailoredQ = createQuestionForChunk(chunk, conceptId, rawTopic, allDocChunks);
+                  const tailoredQ = createQuestionForChunk(chunk, conceptId, rawTopic, allDocChunks, undefined, options.questionFormat);
                   if (tailoredQ) {
                     const nowIso = new Date().toISOString();
                     db.prepare(
@@ -375,18 +485,15 @@ export async function startTutoringSession(options: {
                       evidence_end: tailoredQ.evidenceEnd,
                     };
                     chosenExcerpt = chunk.text;
-                    chosenExcerptChunkId = chunk.id;
                   } else {
                     chosen = undefined;
                     chosenExcerpt = chunk.text;
-                    chosenExcerptChunkId = chunk.id;
                   }
                 } else {
-                  const matched = docQuestions.find((q) => q.evidence_chunk_id === topHit.chunkId);
+                  const matched = docQuestions.find((q) => q.evidence_chunk_id === topHit.id);
                   if (matched) {
                     chosen = matched;
                     chosenExcerpt = matched.evidence_quote;
-                    chosenExcerptChunkId = matched.evidence_chunk_id;
                   }
                 }
               } else {
@@ -403,17 +510,9 @@ export async function startTutoringSession(options: {
 
             if (!chosen) {
               return {
-                message: `I retrieved relevant notes for "${rawTopic || doc.title}" from "${doc.title}", but there is insufficient context in this section to safely generate a multi-choice question without guessing. Here is the verified note excerpt for your review:\n\n"${chosenExcerpt.slice(0, 300)}"`,
+                message: `I found the requested material in "${doc.title}", but its extracted text is not clear enough to create a supported question. Please check the source extraction or upload a clearer text or PDF version of this section.`,
                 question: undefined,
-                evidence: chosenExcerpt
-                  ? {
-                      chunkId: chosenExcerptChunkId,
-                      quote: chosenExcerpt.slice(0, Math.min(chosenExcerpt.length, 150)),
-                      status: "verified" as const,
-                      start: 0,
-                      end: Math.min(chosenExcerpt.length, 150),
-                    }
-                  : undefined,
+                evidence: undefined,
                 masteryList: [],
                 toolTraces,
                 provider: "deterministic_fallback",
@@ -447,8 +546,6 @@ export async function startTutoringSession(options: {
               welcomeMsg = `Let's study "${topicLabel}".\n\n` +
                 `Here is the core concept from your notes:\n` +
                 `"${chosen.evidence_quote}"\n\n` +
-                `Example / Application:\n` +
-                `Applying this rule in practice ensures structural integrity and prevents inconsistencies when updating records.\n\n` +
                 `To check your understanding of this concept, let's explore this question:`;
             } else if (options.goal === "weak") {
               if (weakProgressMeta && !weakProgressMeta.hasHistory) {
@@ -473,6 +570,8 @@ export async function startTutoringSession(options: {
               masteryList: [],
               toolTraces,
               provider: "deterministic_fallback",
+              sectionOrdinal: fullDocMeta?.currentSection,
+              totalSections: fullDocMeta?.totalSections,
             };
           }
         }
@@ -633,10 +732,12 @@ export async function startTutoringSession(options: {
 
   let tutorMessage = "";
   if (options.goal === "teach") {
+    const applicationExample = /(?:\b2nf\b|second.normal.form)/i.test(targetConceptId)
+      ? `Illustrative example:\nA course-enrollment table keyed by (studentId, courseId) should keep studentName with the student record, because that name depends on studentId alone.`
+      : "";
     tutorMessage = `Let's study ${targetConceptId}. Here is the core concept from the syllabus:\n\n` +
       `"${question.evidence?.quote || ""}"\n\n` +
-      `Example / Application:\n` +
-      `Applying this rule in database schema design ensures that records remain consistent and anomalies are prevented.\n\n` +
+      (applicationExample ? `Example / Application:\n${applicationExample}\n\n` : "") +
       `To check your understanding of this concept, let's explore this question:`;
   } else if (isWeak) {
     tutorMessage = `Targeting weak concept: ${targetConceptId} (${weakSelectionReason}). Here is a question to test and reinforce your understanding:`;

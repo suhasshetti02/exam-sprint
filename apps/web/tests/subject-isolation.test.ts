@@ -146,10 +146,11 @@ Deoxyribonucleic acid stores genetic information encoded in adenine, thymine, cy
 
     const q = createQuestionForChunk(netChunk, "tcp", "TCP");
     expect(q).not.toBeNull();
-    expect(q?.choices).toHaveLength(4);
-    const choicesText = q?.choices.join(" ").toLowerCase() || "";
-    expect(choicesText).not.toContain("candidate key");
-    expect(choicesText).not.toContain("mitochondria");
+    expect(q?.kind).toBe("short_answer");
+    expect(q?.choices).toEqual([]);
+    expect(q?.evidenceQuote.toLowerCase()).toContain("transmission control protocol");
+    expect(q?.evidenceQuote.toLowerCase()).not.toContain("candidate key");
+    expect(q?.evidenceQuote.toLowerCase()).not.toContain("mitochondria");
   });
 
   it("4. Ingests Biology document (non-CS) and confirms complete subject isolation", async () => {
@@ -180,10 +181,10 @@ Deoxyribonucleic acid stores genetic information encoded in adenine, thymine, cy
 
     const q = createQuestionForChunk(bioChunk, "mitochondria", "Mitochondria");
     expect(q).not.toBeNull();
-    expect(q?.choices).toHaveLength(4);
-    const choicesText = q?.choices.join(" ").toLowerCase() || "";
-    expect(choicesText).not.toContain("relational");
-    expect(choicesText).not.toContain("candidate key");
-    expect(choicesText).not.toContain("scheduling");
+    expect(q?.kind).toBe("short_answer");
+    expect(q?.choices).toEqual([]);
+    expect(q?.evidenceQuote.toLowerCase()).toContain("mitochondria");
+    expect(q?.evidenceQuote.toLowerCase()).not.toContain("relational");
+    expect(q?.evidenceQuote.toLowerCase()).not.toContain("scheduling");
   });
 });
